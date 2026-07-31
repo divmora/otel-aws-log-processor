@@ -1,0 +1,12 @@
+module github.com/divmora/otel-aws-log-parser
+
+go 1.25
+
+toolchain go1.25.0
+
+require (
+	github.com/aws/aws-lambda-go v1.41.0
+	github.com/aws/aws-sdk-go v1.48.0
+)
+
+require github.com/jmespath/go-jmespath v0.4.0 // indirect

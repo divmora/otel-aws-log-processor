@@ -1,0 +1,9 @@
+{
+  "packages": {
+    ".": {
+      "release-type": "go",
+      "package-name": "otel-aws-log-parser",
+      "include-component-in-tag": false
+    }
+  }
+}
