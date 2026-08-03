@@ -30,7 +30,7 @@ otel-aws-log-parser/
 - **ALB**: Application Load Balancer access logs.
 - **NLB**: Network Load Balancer connection logs.
 - **WAF**: Web Application Firewall logs.
-- **CloudFront**: Standard access logs (gzip).
+- **CloudFront**: Standard access logs (gzip and parquet).
 
 ✅ **OTLP Export**
 - Converts logs to OpenTelemetry `LogRecord` format.

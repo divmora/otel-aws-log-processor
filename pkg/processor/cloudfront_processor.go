@@ -16,11 +16,11 @@ import (
 )
 
 // Regex for CloudFront log filename
-// Format: {DistributionID}.{YYYY}-{MM}-{DD}-{HH}.{UniqueID}.gz
+// Format: {DistributionID}.{YYYY}-{MM}-{DD}-{HH}.{UniqueID}.gz or .parquet
 // Example: E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz
 // We'll use a relatively loose pattern to capture the structure.
 // Distribution ID is usually alphanumeric.
-var cloudFrontLogPattern = regexp.MustCompile(`[A-Z0-9]+\.\d{4}-\d{2}-\d{2}-\d{2}\.[a-zA-Z0-9]+\.gz$`)
+var cloudFrontLogPattern = regexp.MustCompile(`[A-Z0-9]+\.\d{4}-\d{2}-\d{2}-\d{2}\.[a-zA-Z0-9]+\.(gz|parquet)$`)
 
 type CloudFrontProcessor struct {
 	MaxBatchSize  int
@@ -34,18 +34,34 @@ func (p *CloudFrontProcessor) Name() string {
 
 func (p *CloudFrontProcessor) Matches(bucket, key string) bool {
 	// Only match standard logging (v2) with default prefix structure:
-	// AWSLogs/{account-id}/CloudFront/{distribution-id}.{date}.{unique-id}.gz
+	// AWSLogs/{account-id}/CloudFront/{distribution-id}/{yyyy}/{mm}/{dd}/{hh}/{distribution-id}.{date}.{unique-id}.[gz|parquet]
 	// We strictly require "AWSLogs/" prefix and "/CloudFront/" segment to avoid
-	// processing legacy logs or custom prefixes as requested.
+	// processing legacy logs or custom prefixes.
 	return strings.HasPrefix(key, "AWSLogs/") &&
 		strings.Contains(key, "/CloudFront/") &&
-		strings.HasSuffix(key, ".gz") &&
+		(strings.HasSuffix(key, ".gz") || strings.HasSuffix(key, ".parquet")) &&
 		cloudFrontLogPattern.MatchString(key)
 }
 
 func (p *CloudFrontProcessor) Process(ctx context.Context, logger *slog.Logger, s3Client *s3.S3, bucket, key string) ([]LogAdapter, error) {
-	// Attempt to parse account/region if they happen to be in the path (unlikely for standard CF logs, but harmless)
-	accountID, region := utils.ParseRegionAccountFromS3Key(key)
+	// Attempt to parse account/region if they happen to be in the path
+	accountID, _ := utils.ParseRegionAccountFromS3Key(key)
+	// CloudFront is global, the default S3 regex might extract DistributionID as Region, so we override it
+	region := "global"
+
+	if strings.HasSuffix(key, ".parquet") {
+		return ReadAndParseParquetFromS3(logger, s3Client, bucket, key, p.MaxBatchSize, p.MaxConcurrent, func(row *parser.CloudFrontParquetLogEntry) (LogAdapter, error) {
+			if row == nil {
+				return nil, nil
+			}
+			entry := row.ToLogEntry()
+			return CloudFrontAdapter{
+				CloudFrontLogEntry: entry,
+				AccountID:          accountID,
+				Region:             region,
+			}, nil
+		})
+	}
 
 	return ReadAndParseFromS3(logger, s3Client, bucket, key, p.MaxBatchSize, p.MaxConcurrent, func(line string) (LogAdapter, error) {
 		entry, err := p.Parser.ParseLogLine(line)
