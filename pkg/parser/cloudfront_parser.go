@@ -45,6 +45,83 @@ type CloudFrontLogEntry struct {
 	SCRangeEnd              string  // 33. sc-range-end
 }
 
+// CloudFrontParquetLogEntry represents a parsed CloudFront Parquet log entry.
+// CloudFront v2 logging writes all fields as STRING type, including numbers and nulls ("-").
+type CloudFrontParquetLogEntry struct {
+	Date                    string `parquet:"date"`
+	Time                    string `parquet:"time"`
+	XEdgeLocation           string `parquet:"x_edge_location,optional"`
+	SCBytes                 string `parquet:"sc_bytes,optional"`
+	CIP                     string `parquet:"c_ip,optional"`
+	CSMethod                string `parquet:"cs_method,optional"`
+	CSHost                  string `parquet:"cs_Host,optional"`
+	CSURIStem               string `parquet:"cs_uri_stem,optional"`
+	SCStatus                string `parquet:"sc_status,optional"`
+	CSReferer               string `parquet:"cs_Referer,optional"`
+	CSUserAgent             string `parquet:"cs_User_Agent,optional"`
+	CSURIQuery              string `parquet:"cs_uri_query,optional"`
+	CSCookie                string `parquet:"cs_Cookie,optional"`
+	XEdgeResultType         string `parquet:"x_edge_result_type,optional"`
+	XEdgeRequestID          string `parquet:"x_edge_request_id,optional"`
+	XHostHeader             string `parquet:"x_host_header,optional"`
+	CSProtocol              string `parquet:"cs_protocol,optional"`
+	CSBytes                 string `parquet:"cs_bytes,optional"`
+	TimeTaken               string `parquet:"time_taken,optional"`
+	XForwardedFor           string `parquet:"x_forwarded_for,optional"`
+	SSLProtocol             string `parquet:"ssl_protocol,optional"`
+	SSLCipher               string `parquet:"ssl_cipher,optional"`
+	XEdgeResponseResultType string `parquet:"x_edge_response_result_type,optional"`
+	CSProtocolVersion       string `parquet:"cs_protocol_version,optional"`
+	FLEStatus               string `parquet:"fle_status,optional"`
+	FLEEncryptedFields      string `parquet:"fle_encrypted_fields,optional"`
+	CPort                   string `parquet:"c_port,optional"`
+	TimeToFirstByte         string `parquet:"time_to_first_byte,optional"`
+	XEdgeDetailedResultType string `parquet:"x_edge_detailed_result_type,optional"`
+	SCContentType           string `parquet:"sc_content_type,optional"`
+	SCContentLen            string `parquet:"sc_content_len,optional"`
+	SCRangeStart            string `parquet:"sc_range_start,optional"`
+	SCRangeEnd              string `parquet:"sc_range_end,optional"`
+}
+
+// ToLogEntry converts the string-based Parquet entry into the strongly-typed CloudFrontLogEntry.
+func (p *CloudFrontParquetLogEntry) ToLogEntry() *CloudFrontLogEntry {
+	return &CloudFrontLogEntry{
+		Date:                    p.Date,
+		Time:                    p.Time,
+		XEdgeLocation:           p.XEdgeLocation,
+		SCBytes:                 utils.ParseInt64(p.SCBytes),
+		CIP:                     p.CIP,
+		CSMethod:                p.CSMethod,
+		CSHost:                  p.CSHost,
+		CSURIStem:               p.CSURIStem,
+		SCStatus:                utils.ParseInt(p.SCStatus),
+		CSReferer:               p.CSReferer,
+		CSUserAgent:             p.CSUserAgent,
+		CSURIQuery:              p.CSURIQuery,
+		CSCookie:                p.CSCookie,
+		XEdgeResultType:         p.XEdgeResultType,
+		XEdgeRequestID:          p.XEdgeRequestID,
+		XHostHeader:             p.XHostHeader,
+		CSProtocol:              p.CSProtocol,
+		CSBytes:                 utils.ParseInt64(p.CSBytes),
+		TimeTaken:               utils.ParseFloat(p.TimeTaken),
+		XForwardedFor:           p.XForwardedFor,
+		SSLProtocol:             p.SSLProtocol,
+		SSLCipher:               p.SSLCipher,
+		XEdgeResponseResultType: p.XEdgeResponseResultType,
+		CSProtocolVersion:       p.CSProtocolVersion,
+		FLEStatus:               p.FLEStatus,
+		FLEEncryptedFields:      utils.ParseInt(p.FLEEncryptedFields),
+		CPort:                   utils.ParseInt(p.CPort),
+		TimeToFirstByte:         utils.ParseFloat(p.TimeToFirstByte),
+		XEdgeDetailedResultType: p.XEdgeDetailedResultType,
+		SCContentType:           p.SCContentType,
+		SCContentLen:            utils.ParseInt64(p.SCContentLen),
+		SCRangeStart:            p.SCRangeStart,
+		SCRangeEnd:              p.SCRangeEnd,
+	}
+}
+
 // CloudFrontParser implements LogParser for CloudFront logs
 type CloudFrontParser struct{}
 

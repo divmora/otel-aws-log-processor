@@ -36,7 +36,7 @@ func init() {
 	s3Client = s3.New(sess)
 
 	// Load configuration from environment
-	otlpEndpoint := utils.GetEnv("SIGNOZ_OTLP_ENDPOINT", "http://localhost:4318/v1/logs")
+	otlpEndpoint := utils.GetEnv("OTLP_HTTP_LOGS_ENDPOINT", "http://localhost:4318/v1/logs")
 	basicAuthUser := utils.GetEnv("BASIC_AUTH_USERNAME", "")
 	basicAuthPass := utils.GetEnv("BASIC_AUTH_PASSWORD", "")
 	maxBatchSize := utils.GetEnvInt("MAX_BATCH_SIZE", 500)

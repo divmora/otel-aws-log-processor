@@ -2,6 +2,7 @@ package processor
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/parquet-go/parquet-go"
 )
 
 // ProcessLineFunc is a function that processes a single log line
@@ -193,6 +195,82 @@ func ReadAndParseJSONFromS3(logger *slog.Logger, s3Client *s3.S3, bucket, key st
 	}()
 
 	// Collect results
+	entries := make([]LogAdapter, 0)
+	for entry := range entriesChan {
+		entries = append(entries, entry)
+	}
+
+	logger.Info("Parsed entries", "count", len(entries))
+	return entries, nil
+}
+
+// ReadAndParseParquetFromS3 streams and parses parquet logs
+func ReadAndParseParquetFromS3[T any](logger *slog.Logger, s3Client *s3.S3, bucket, key string, maxBatchSize, maxConcurrent int, parseFunc func(*T) (LogAdapter, error)) ([]LogAdapter, error) {
+	// Get object from S3
+	result, err := s3Client.GetObject(&s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get S3 object: %w", err)
+	}
+	defer result.Body.Close()
+
+	// Download to memory for random access required by Parquet
+	data, err := io.ReadAll(result.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read S3 object body: %w", err)
+	}
+
+	reader := bytes.NewReader(data)
+	parquetReader := parquet.NewGenericReader[T](reader)
+
+	rowChan := make(chan *T, maxBatchSize)
+	entriesChan := make(chan LogAdapter, maxBatchSize)
+	var wg sync.WaitGroup
+
+	numWorkers := maxConcurrent
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for row := range rowChan {
+				entry, err := parseFunc(row)
+				if err == nil && entry != nil {
+					entriesChan <- entry
+				}
+			}
+		}()
+	}
+
+	go func() {
+		defer close(rowChan)
+		rows := make([]T, maxBatchSize)
+		for {
+			n, err := parquetReader.Read(rows)
+			for i := 0; i < n; i++ {
+				// Copy row because we pass a pointer to worker, and rows slice is reused
+				rowCopy := rows[i]
+				rowChan <- &rowCopy
+			}
+			if err != nil {
+				if err != io.EOF {
+					logger.Error("Error reading parquet", "error", err)
+				}
+				break
+			}
+		}
+	}()
+
+	go func() {
+		wg.Wait()
+		close(entriesChan)
+	}()
+
 	entries := make([]LogAdapter, 0)
 	for entry := range entriesChan {
 		entries = append(entries, entry)

@@ -15,13 +15,17 @@ func TestCloudFrontProcessor_Matches(t *testing.T) {
 	}{
 		// Valid case: Standard Logging v2 with default prefix
 		{"AWSLogs/123456789012/CloudFront/E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz", true},
-		// Invalid cases: Legacy or Custom prefixes
-		{"E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz", false}, // Legacy/Root
-		{"prefix/E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz", false}, // Custom prefix
-		{"my/custom/path/E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz", false}, // Custom path
+		// Invalid cases: Legacy or Custom prefixes (we enforce AWSLogs/.../CloudFront/)
+		{"E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz", false},
+		{"prefix/E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz", false},
+		{"my/custom/path/E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz", false},
+		// Valid cases: Parquet format
+		{"AWSLogs/123456789012/CloudFront/E2K55636F2K7.2019-12-04-21.d111111abcdef8.parquet", true},
+		{"AWSLogs/178751861697/CloudFront/E2RM8BAWEBGMEV/2026/07/31/17/E2RM8BAWEBGMEV.2026-07-31-17.92cee41b.parquet", true},
+		{"prefix/E2K55636F2K7.2019-12-04-21.d111111abcdef8.parquet", false},
 		// Invalid cases: Other types
 		{"not-cloudfront.log", false},
-		{"AWSLogs/123456789012/CloudFront/E2K55636F2K7.2019-12-04-21.d111111abcdef8.txt", false}, // Must be .gz
+		{"AWSLogs/123456789012/CloudFront/E2K55636F2K7.2019-12-04-21.d111111abcdef8.txt", false}, // Must be .gz or .parquet
 		{"invalid-format.gz", false}, // Does not match pattern
 		{"AWSLogs/123456789012/elasticloadbalancing/us-east-1/2023/01/01/123456789012_elasticloadbalancing_us-east-1_app.my-load-balancer.1234567890.gz", false}, // ALB log
 	}

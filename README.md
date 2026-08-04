@@ -30,7 +30,7 @@ otel-aws-log-parser/
 - **ALB**: Application Load Balancer access logs.
 - **NLB**: Network Load Balancer connection logs.
 - **WAF**: Web Application Firewall logs.
-- **CloudFront**: Standard access logs (gzip).
+- **CloudFront**: Standard access logs (gzip and parquet).
 
 ✅ **OTLP Export**
 - Converts logs to OpenTelemetry `LogRecord` format.
@@ -65,7 +65,7 @@ The Lambda function is configured via environment variables:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `SIGNOZ_OTLP_ENDPOINT` | HTTP URL of the OTLP Log Receiver | `http://localhost:4318/v1/logs` |
+| `OTLP_HTTP_LOGS_ENDPOINT` | HTTP URL of the OTLP Log Receiver | `http://localhost:4318/v1/logs` |
 | `BASIC_AUTH_USERNAME` | Basic Auth Username (optional) | "" |
 | `BASIC_AUTH_PASSWORD` | Basic Auth Password (optional) | "" |
 | `MAX_BATCH_SIZE` | Max logs per OTLP request | `500` |
@@ -110,7 +110,7 @@ aws lambda create-function \
   --architectures arm64 \
   --timeout 300 \
   --memory-size 512 \
-  --environment "Variables={SIGNOZ_OTLP_ENDPOINT=https://ingest.your-observability.com/v1/logs,MAX_BATCH_SIZE=1000}"
+  --environment "Variables={OTLP_HTTP_LOGS_ENDPOINT=https://ingest.your-observability.com/v1/logs,MAX_BATCH_SIZE=1000}"
 ```
 
 ### 4. Configure Trigger
