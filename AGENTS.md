@@ -29,9 +29,10 @@ otel-aws-log-processor/
 │   ├── processor/                # File-matching registry and LogAdapter conversions
 │   ├── sender/                   # OTLP HTTP batching and retry client
 │   └── utils/                    # Helpers for env vars, parsing, trace IDs, URLs
+├── docs/                         # GitHub Pages static documentation portal
 ├── .github/
 │   ├── dependabot.yml            # Automated weekly dependency updates
-│   └── workflows/                # Reusable CI/CD, release, and PR workflows
+│   └── workflows/                # Reusable CI/CD, release, pages, and PR workflows
 ├── .goreleaser.yaml              # Multi-arch binary and Lambda packaging
 ├── .release-please-config.json   # Release Please configuration
 ├── .release-please-manifest.json # Release Please version manifest
@@ -84,6 +85,10 @@ otel-aws-log-processor/
 - **Build Docker image**:
   ```bash
   make docker-build
+  ```
+- **Preview documentation locally**:
+  ```bash
+  make docs-serve
   ```
 
 ---

@@ -1,4 +1,4 @@
-.PHONY: build clean test test-coverage dev-setup fmt lint lambda-package docker-build docker-build-multiarch help
+.PHONY: build clean test test-coverage dev-setup fmt lint lambda-package docker-build docker-build-multiarch docs-serve help
 
 # Build all binaries to bin/
 build:
@@ -53,6 +53,13 @@ docker-build:
 docker-build-multiarch:
 	@docker buildx build --platform linux/amd64,linux/arm64 -t otel-aws-log-processor:latest .
 
+PORT ?= 3000
+
+# Serve documentation locally
+docs-serve:
+	@echo "Serving documentation at http://localhost:$(PORT)..."
+	@python3 -m http.server $(PORT) --directory docs
+
 help:
 	@echo "Available targets:"
 	@echo "  make build                  - Build all binaries to bin/"
@@ -65,3 +72,4 @@ help:
 	@echo "  make lint                   - Lint Go code"
 	@echo "  make docker-build           - Build Docker image locally"
 	@echo "  make docker-build-multiarch - Build multi-arch Docker image"
+	@echo "  make docs-serve             - Serve documentation locally on port $(PORT)"

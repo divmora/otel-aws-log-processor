@@ -5,9 +5,12 @@
 [![CI/CD](https://github.com/divmora/otel-aws-log-processor/actions/workflows/ci.yml/badge.svg)](https://github.com/divmora/otel-aws-log-processor/actions)
 [![Security Policy](https://img.shields.io/badge/Security-Policy-green.svg)](SECURITY.md)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/divmora/otel-aws-log-processor)](go.mod)
+[![Documentation: GitHub Pages](https://img.shields.io/badge/docs-GitHub_Pages-22c55e.svg)](https://divmora.github.io/otel-aws-log-processor/)
 [![Documentation: DeepWiki](https://img.shields.io/badge/docs-DeepWiki-blue.svg)](https://deepwiki.com/divmora/otel-aws-log-processor)
 
 A high-performance Go-based AWS Lambda application that parses and converts AWS access logs into OpenTelemetry (OTLP) log records, exporting them via HTTP to any OTLP-compatible backend (e.g., SigNoz, OpenTelemetry Collector, Coralogix, Datadog).
+
+📖 **Comprehensive Documentation & Setup Guides**: [https://divmora.github.io/otel-aws-log-processor/](https://divmora.github.io/otel-aws-log-processor/)
 
 ---
 
@@ -181,6 +184,9 @@ make lambda-package
 
 # Build local Docker image
 make docker-build
+
+# Preview documentation locally
+make docs-serve
 ```
 
 ---

@@ -1,0 +1,1750 @@
+<!DOCTYPE html>
+<html lang="en" class="dark scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AWS Log to OTel Processor — Documentation & Usage Guide</title>
+  <meta name="description" content="High-performance serverless AWS Lambda processor that streams, parses, and converts ALB, NLB, CloudFront, and WAF access logs into semantic OpenTelemetry (OTLP) records.">
+  <meta name="keywords" content="OpenTelemetry, OTLP, AWS Lambda, ALB, NLB, CloudFront, WAF, S3, SQS, Observability, SigNoz, Datadog, Coralogix, Go">
+  <meta property="og:title" content="AWS Log to OTel Processor Documentation">
+  <meta property="og:description" content="Stream, parse, and export AWS access logs to OpenTelemetry backends with high memory efficiency and semantic resource scoping.">
+  <meta property="og:type" content="website">
+
+  <!-- Tailwind CSS & FontAwesome -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <!-- Mermaid.js -->
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            mono: ['Fira Code', 'monospace'],
+          },
+          colors: {
+            brand: {
+              50: '#eef2ff',
+              100: '#e0e7ff',
+              400: '#818cf8',
+              500: '#6366f1',
+              600: '#4f46e5',
+              700: '#4338ca',
+            },
+            telemetry: {
+              amber: '#f59e0b',
+              orange: '#f97316',
+              cyan: '#06b6d4',
+              emerald: '#10b981',
+              violet: '#8b5cf6',
+            },
+            dark: {
+              bg: '#0b0f19',
+              card: '#111827',
+              cardHover: '#161f33',
+              border: '#1f2937',
+              muted: '#374151',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    pre, code { font-family: 'Fira Code', monospace; }
+    .glass { background: rgba(17, 24, 39, 0.85); backdrop-filter: blur(14px); }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: #0b0f19; }
+    ::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+    .tab-btn.active {
+      background-color: #4f46e5;
+      color: #ffffff;
+      border-color: #6366f1;
+    }
+    .subtab-btn.active {
+      border-color: #6366f1;
+      color: #818cf8;
+      background-color: rgba(99, 102, 241, 0.1);
+    }
+    .code-scroll {
+      max-height: 520px;
+    }
+    #toast {
+      transition: opacity 0.25s ease-in-out, transform 0.25s ease-in-out;
+    }
+  </style>
+</head>
+<body class="bg-dark-bg text-slate-200 antialiased min-h-screen flex flex-col selection:bg-brand-500 selection:text-white">
+
+  <!-- Toast Notification -->
+  <div id="toast" class="fixed bottom-6 right-6 z-50 transform translate-y-10 opacity-0 pointer-events-none flex items-center space-x-3 bg-slate-900 border border-brand-500/40 px-4 py-3 rounded-xl shadow-2xl text-sm text-slate-100">
+    <div class="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-xs">
+      <i class="fa-solid fa-check"></i>
+    </div>
+    <span id="toast-message">Copied to clipboard</span>
+  </div>
+
+  <!-- Top Sticky Header -->
+  <header class="sticky top-0 z-40 glass border-b border-dark-border">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      
+      <!-- Brand & Title -->
+      <div class="flex items-center space-x-3">
+        <button id="mobile-menu-btn" class="lg:hidden p-2 rounded-lg text-slate-400 hover:text-white hover:bg-dark-muted transition" aria-label="Toggle Navigation">
+          <i class="fa-solid fa-bars text-lg"></i>
+        </button>
+        <a href="#" class="flex items-center space-x-3 group">
+          <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-telemetry-orange via-brand-500 to-telemetry-cyan flex items-center justify-center text-white shadow-lg shadow-brand-500/20 group-hover:scale-105 transition transform">
+            <i class="fa-solid fa-satellite-dish text-lg"></i>
+          </div>
+          <div>
+            <span class="font-bold text-lg text-white tracking-tight">AWS Log to <span class="text-brand-400">OTel Processor</span></span>
+            <span class="ml-2 text-xs px-2 py-0.5 rounded-full bg-brand-500/10 text-brand-400 border border-brand-500/20 font-mono">v0.2.0</span>
+          </div>
+        </a>
+      </div>
+
+      <!-- Search & External Links -->
+      <div class="flex items-center space-x-3 sm:space-x-4">
+        <!-- Quick Search -->
+        <div class="relative hidden sm:block w-48 md:w-64">
+          <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-slate-500 text-xs"></i>
+          <input type="text" id="quick-search" placeholder="Search documentation..." class="w-full bg-dark-card border border-dark-border rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-brand-400 focus:ring-1 focus:ring-brand-400 transition font-sans">
+        </div>
+
+        <a href="https://deepwiki.com/divmora/otel-aws-log-processor" target="_blank" rel="noopener noreferrer" class="hidden md:inline-flex items-center hover:opacity-90 transition" title="Ask DeepWiki">
+          <img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki" class="h-6">
+        </a>
+        
+        <a href="https://github.com/divmora/otel-aws-log-processor" target="_blank" rel="noopener noreferrer" class="p-2 px-3 rounded-lg bg-dark-card border border-dark-border hover:border-slate-600 text-slate-300 hover:text-white transition flex items-center space-x-2 text-sm font-medium">
+          <i class="fa-brands fa-github text-base"></i>
+          <span class="hidden sm:inline">GitHub</span>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex-1 flex py-8 gap-8 w-full">
+    
+    <!-- Sidebar Navigation (Desktop) -->
+    <aside id="sidebar" class="w-64 flex-shrink-0 hidden lg:block">
+      <div class="sticky top-24 space-y-7 text-xs">
+
+        <!-- Getting Started -->
+        <div>
+          <h3 class="font-semibold uppercase tracking-wider text-slate-400 mb-2 px-3">Getting Started</h3>
+          <nav class="space-y-0.5 text-slate-300 font-medium">
+            <a href="#overview" class="nav-link flex items-center px-3 py-2 rounded-lg hover:bg-dark-card hover:text-white transition">
+              <i class="fa-solid fa-bolt w-5 text-amber-400"></i>Overview & Value
+            </a>
+            <a href="#architecture" class="nav-link flex items-center px-3 py-2 rounded-lg hover:bg-dark-card hover:text-white transition">
+              <i class="fa-solid fa-diagram-project w-5 text-brand-400"></i>Architecture Flow
+            </a>
+            <a href="#quickstart" class="nav-link flex items-center px-3 py-2 rounded-lg hover:bg-dark-card hover:text-white transition">
+              <i class="fa-solid fa-rocket w-5 text-emerald-400"></i>5-Minute Quickstart
+            </a>
+          </nav>
+        </div>
+
+        <!-- Supported Log Types -->
+        <div>
+          <h3 class="font-semibold uppercase tracking-wider text-slate-400 mb-2 px-3">Supported AWS Logs</h3>
+          <nav class="space-y-0.5 text-slate-300 font-medium">
+            <a href="#logs-alb" class="nav-link flex items-center px-3 py-2 rounded-lg hover:bg-dark-card hover:text-white transition">
+              <i class="fa-solid fa-layer-group w-5 text-sky-400"></i>ALB (HTTP/HTTPS)
+            </a>
+            <a href="#logs-nlb" class="nav-link flex items-center px-3 py-2 rounded-lg hover:bg-dark-card hover:text-white transition">
+              <i class="fa-solid fa-network-wired w-5 text-indigo-400"></i>NLB (TCP/TLS)
+            </a>
+            <a href="#logs-cloudfront" class="nav-link flex items-center px-3 py-2 rounded-lg hover:bg-dark-card hover:text-white transition">
+              <i class="fa-solid fa-globe w-5 text-cyan-400"></i>CloudFront (Gz & Parquet)
+            </a>
+            <a href="#logs-waf" class="nav-link flex items-center px-3 py-2 rounded-lg hover:bg-dark-card hover:text-white transition">
+              <i class="fa-solid fa-shield-halved w-5 text-rose-400"></i>AWS WAF (JSON)
+            </a>
+            <a href="#s3-patterns" class="nav-link flex items-center px-3 py-2 rounded-lg hover:bg-dark-card hover:text-white transition">
+              <i class="fa-solid fa-filter w-5 text-amber-300"></i>S3 Path Matching Rules
+            </a>
+          </nav>
+        </div>
+
+        <!-- Deployment & IaC -->
+        <div>
+          <h3 class="font-semibold uppercase tracking-wider text-slate-400 mb-2 px-3">Deployment & IaC</h3>
+          <nav class="space-y-0.5 text-slate-300 font-medium">
+            <a href="#iac-terraform" class="nav-link flex items-center px-3 py-2 rounded-lg hover:bg-dark-card hover:text-white transition">
+              <i class="fa-solid fa-cubes w-5 text-purple-400"></i>Terraform Module
+            </a>
+            <a href="#iac-cloudformation" class="nav-link flex items-center px-3 py-2 rounded-lg hover:bg-dark-card hover:text-white transition">
+              <i class="fa-solid fa-file-code w-5 text-orange-400"></i>CloudFormation / SAM
+            </a>
+            <a href="#deployment-cli" class="nav-link flex items-center px-3 py-2 rounded-lg hover:bg-dark-card hover:text-white transition">
+              <i class="fa-solid fa-terminal w-5 text-emerald-400"></i>AWS CLI Step-by-Step
+            </a>
+            <a href="#iam-permissions" class="nav-link flex items-center px-3 py-2 rounded-lg hover:bg-dark-card hover:text-white transition">
+              <i class="fa-solid fa-lock w-5 text-yellow-400"></i>IAM Permissions Policy
+            </a>
+          </nav>
+        </div>
+
+        <!-- Integrations & Configuration -->
+        <div>
+          <h3 class="font-semibold uppercase tracking-wider text-slate-400 mb-2 px-3">Destinations & Config</h3>
+          <nav class="space-y-0.5 text-slate-300 font-medium">
+            <a href="#destinations" class="nav-link flex items-center px-3 py-2 rounded-lg hover:bg-dark-card hover:text-white transition">
+              <i class="fa-solid fa-share-nodes w-5 text-pink-400"></i>OTel Collector & Backends
+            </a>
+            <a href="#configuration" class="nav-link flex items-center px-3 py-2 rounded-lg hover:bg-dark-card hover:text-white transition">
+              <i class="fa-solid fa-sliders w-5 text-teal-400"></i>Environment Variables
+            </a>
+            <a href="#semantic-attributes" class="nav-link flex items-center px-3 py-2 rounded-lg hover:bg-dark-card hover:text-white transition">
+              <i class="fa-solid fa-tags w-5 text-indigo-300"></i>OTel Semantic Mapping
+            </a>
+            <a href="#operations" class="nav-link flex items-center px-3 py-2 rounded-lg hover:bg-dark-card hover:text-white transition">
+              <i class="fa-solid fa-chart-line w-5 text-emerald-300"></i>Operations & Troubleshooting
+            </a>
+          </nav>
+        </div>
+
+      </div>
+    </aside>
+
+    <!-- Mobile Drawer Navigation -->
+    <div id="mobile-drawer" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden lg:hidden">
+      <div class="fixed top-0 left-0 bottom-0 w-72 bg-dark-bg border-r border-dark-border p-6 overflow-y-auto space-y-6">
+        <div class="flex items-center justify-between pb-4 border-b border-dark-border">
+          <div class="flex items-center space-x-2">
+            <div class="w-8 h-8 rounded-lg bg-gradient-to-tr from-telemetry-orange to-brand-500 flex items-center justify-center text-white text-sm">
+              <i class="fa-solid fa-satellite-dish"></i>
+            </div>
+            <span class="font-bold text-white text-sm">OTel AWS Logs</span>
+          </div>
+          <button id="close-drawer-btn" class="p-1 text-slate-400 hover:text-white">
+            <i class="fa-solid fa-xmark text-lg"></i>
+          </button>
+        </div>
+        <div class="space-y-6 text-sm" id="mobile-links-container">
+          <!-- Cloned links will be inserted or matched via anchor click -->
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Documentation Body -->
+    <main class="flex-1 min-w-0 space-y-16">
+
+      <!-- Hero & Overview Section -->
+      <section id="overview" class="space-y-6">
+        <div class="space-y-4">
+          <div class="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-brand-500/10 border border-brand-500/20 text-brand-400 text-xs font-medium">
+            <i class="fa-solid fa-cloud-arrow-up"></i>
+            <span>Production-Grade Serverless AWS Observability Ingestion</span>
+          </div>
+          <h1 class="text-3xl sm:text-4xl lg:text-5xl font-extrabold text-white tracking-tight leading-tight">
+            Stream AWS Access Logs into <span class="bg-gradient-to-r from-brand-400 via-indigo-300 to-telemetry-cyan bg-clip-text text-transparent">OpenTelemetry (OTLP)</span>
+          </h1>
+          <p class="text-base sm:text-lg text-slate-300 max-w-3xl leading-relaxed">
+            <code class="text-brand-300 font-mono text-sm bg-brand-950/40 px-1.5 py-0.5 rounded border border-brand-500/20">otel-aws-log-processor</code> is an ultra-fast, memory-efficient AWS Lambda application written in Go. Triggered directly by Amazon SQS via S3 / EventBridge, it uncompresses, parses, and converts raw access logs into semantic OpenTelemetry records, delivering them over HTTP to any OTLP backend.
+          </p>
+        </div>
+
+        <!-- Key Architectural Value Props -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+          
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border hover:border-brand-500/40 transition space-y-3">
+            <div class="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center font-bold text-lg">
+              <i class="fa-solid fa-bolt-lightning"></i>
+            </div>
+            <h3 class="font-bold text-white text-base">Streaming Line-by-Line</h3>
+            <p class="text-xs text-slate-400 leading-relaxed">
+              Streams S3 compressed archives directly via io.Reader scanners without buffering gigabytes into memory. Operates with tiny RAM footprints (256MB–512MB).
+            </p>
+          </div>
+
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border hover:border-brand-500/40 transition space-y-3">
+            <div class="w-10 h-10 rounded-xl bg-brand-500/10 text-brand-400 flex items-center justify-center font-bold text-lg">
+              <i class="fa-solid fa-sitemap"></i>
+            </div>
+            <h3 class="font-bold text-white text-base">Semantic Resource Batching</h3>
+            <p class="text-xs text-slate-400 leading-relaxed">
+              Groups records automatically by ELB TargetGroup ARN, CloudFront Distribution ID, or WebACL before sending, adhering strictly to OTLP Resource scoping.
+            </p>
+          </div>
+
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border hover:border-brand-500/40 transition space-y-3">
+            <div class="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center font-bold text-lg">
+              <i class="fa-solid fa-shield-check"></i>
+            </div>
+            <h3 class="font-bold text-white text-base">SQS Partial Failure Resilience</h3>
+            <p class="text-xs text-slate-400 leading-relaxed">
+              Employs <code class="text-emerald-300 font-mono">ReportBatchItemFailures</code>. Transient downstream HTTP drops fail only the affected SQS message, avoiding duplicate reprocessing.
+            </p>
+          </div>
+
+        </div>
+
+        <!-- Supported Integrations Summary Pills -->
+        <div class="p-4 rounded-xl bg-dark-card/60 border border-dark-border flex flex-wrap items-center gap-3 text-xs">
+          <span class="text-slate-400 font-semibold uppercase tracking-wider text-[11px] mr-2">Compatible Backends:</span>
+          <span class="px-2.5 py-1 rounded-lg bg-dark-muted/60 text-slate-200 border border-dark-border flex items-center"><i class="fa-solid fa-circle-nodes mr-1.5 text-telemetry-orange"></i>OpenTelemetry Collector</span>
+          <span class="px-2.5 py-1 rounded-lg bg-dark-muted/60 text-slate-200 border border-dark-border flex items-center"><i class="fa-solid fa-chart-simple mr-1.5 text-amber-400"></i>SigNoz Cloud & Self-Hosted</span>
+          <span class="px-2.5 py-1 rounded-lg bg-dark-muted/60 text-slate-200 border border-dark-border flex items-center"><i class="fa-solid fa-cloud mr-1.5 text-purple-400"></i>Coralogix</span>
+          <span class="px-2.5 py-1 rounded-lg bg-dark-muted/60 text-slate-200 border border-dark-border flex items-center"><i class="fa-solid fa-dog mr-1.5 text-violet-400"></i>Datadog OTLP</span>
+          <span class="px-2.5 py-1 rounded-lg bg-dark-muted/60 text-slate-200 border border-dark-border flex items-center"><i class="fa-solid fa-fire-flame-curved mr-1.5 text-orange-400"></i>Grafana Loki</span>
+        </div>
+      </section>
+
+      <!-- Architecture & Workflow Section -->
+      <section id="architecture" class="space-y-6 pt-6 border-t border-dark-border">
+        <div class="space-y-2">
+          <div class="flex items-center space-x-2">
+            <i class="fa-solid fa-diagram-project text-2xl text-brand-400"></i>
+            <h2 class="text-2xl font-bold text-white">Architecture & Ingestion Pipeline</h2>
+          </div>
+          <p class="text-sm text-slate-400">
+            How access logs journey from AWS Edge & Networking infrastructure into your central observability backend.
+          </p>
+        </div>
+
+        <!-- Architecture Flow Diagram -->
+        <div class="p-6 rounded-2xl bg-dark-card border border-dark-border overflow-x-auto space-y-4">
+          <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-400">System Topology Diagram</h3>
+          <pre class="mermaid text-center">
+flowchart LR
+    subgraph AWS_Sources["1. AWS Traffic Sources"]
+        ALB["ALB Access Logs<br/>(.log.gz)"]
+        NLB["NLB Flow Logs<br/>(.log.gz)"]
+        CF["CloudFront Logs<br/>(.gz / .parquet)"]
+        WAF["AWS WAF Logs<br/>(.json.gz)"]
+    end
+
+    subgraph Storage_Events["2. Event Routing"]
+        S3[("S3 Buckets<br/>AWSLogs/ & aws-waf-logs-*")]
+        EB["Amazon EventBridge<br/>ObjectCreated Rules"]
+        SQS[("Amazon SQS Queue<br/>with Redrive DLQ")]
+    end
+
+    subgraph Lambda_Engine["3. Go Lambda Processor (provided.al2023)"]
+        Consumer["SQS Event Batch Handler<br/>ReportBatchItemFailures"]
+        Streamer["S3 Object Stream Reader<br/>(Gzip / Parquet)"]
+        Registry["Parser Registry<br/>ALB | NLB | CF | WAF"]
+        OTelMap["LogAdapter Semantic Transformer<br/>Resource & Field Mapper"]
+        Batcher["OTLP HTTP Client<br/>Concurrent Worker Pool & Retry"]
+    end
+
+    subgraph Destination["4. OTLP HTTP Ingestion"]
+        Collector["OpenTelemetry Collector<br/>(otlphttp /v1/logs)"]
+        SigNoz["SigNoz / Datadog / Coralogix"]
+    end
+
+    ALB --> S3
+    NLB --> S3
+    CF --> S3
+    WAF --> S3
+
+    S3 -->|ObjectCreated| EB
+    EB -->|Push Notification| SQS
+    SQS -->|SQSEvent| Consumer
+
+    Consumer --> Streamer
+    Streamer --> Registry
+    Registry --> OTelMap
+    OTelMap --> Batcher
+    Batcher -->|POST application/json| Collector
+    Batcher -->|POST application/json| SigNoz
+          </pre>
+        </div>
+
+        <!-- Execution Sequence Diagram -->
+        <div class="p-6 rounded-2xl bg-dark-card border border-dark-border overflow-x-auto space-y-4">
+          <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-400">SQS Batch Handling & Partial Failure Resilience</h3>
+          <pre class="mermaid text-center">
+sequenceDiagram
+    autonumber
+    actor AWS as AWS S3 / EventBridge
+    participant SQS as SQS Queue
+    participant L as Lambda Handler
+    participant S3 as Amazon S3 API
+    participant OTLP as OTLP Endpoint (HTTP)
+
+    AWS->>SQS: Push ObjectCreated notification
+    SQS->>L: Invoke with batch of up to 10 messages
+    loop For each SQS Message in Batch
+        L->>S3: GetObject (stream body)
+        alt Matching Parser Found
+            L->>L: Stream uncompress and transform into LogAdapters
+        else Unknown Key Format
+            L->>L: Log warning and gracefully skip
+        end
+    end
+    L->>L: Group records by ResourceKey (TargetGroup, DistId, WebACL)
+    L->>OTLP: POST batches of up to MAX_BATCH_SIZE (e.g. 500)
+    alt OTLP Ingest Succeeded (200 OK)
+        L-->>SQS: Success (Messages deleted from SQS)
+    else OTLP Ingest Failed after MAX_RETRIES
+        L-->>SQS: Return BatchItemFailures=[message_id]
+        Note over SQS: SQS redrives only the failed message
+    end
+          </pre>
+        </div>
+
+      </section>
+
+      <!-- 5-Minute Quickstart Guide -->
+      <section id="quickstart" class="space-y-6 pt-6 border-t border-dark-border">
+        <div class="space-y-2">
+          <div class="flex items-center space-x-2">
+            <i class="fa-solid fa-rocket text-2xl text-emerald-400"></i>
+            <h2 class="text-2xl font-bold text-white">5-Minute Quickstart Guide</h2>
+          </div>
+          <p class="text-sm text-slate-400">
+            Get up and running with a production-ready deployment in four simple steps.
+          </p>
+        </div>
+
+        <!-- Step List -->
+        <div class="space-y-6">
+
+          <!-- Step 1 -->
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-3">
+            <div class="flex items-center space-x-3">
+              <span class="w-7 h-7 rounded-full bg-brand-500/20 text-brand-400 font-mono font-bold flex items-center justify-center text-xs">1</span>
+              <h3 class="text-base font-bold text-white">Build the Lambda Zip Package</h3>
+            </div>
+            <p class="text-xs text-slate-400">
+              Compile the static ARM64 Go binary (<code class="text-slate-200">bootstrap</code>) optimized for the <code class="text-slate-200">provided.al2023</code> runtime:
+            </p>
+            <div class="relative">
+              <button onclick="copyCode('step1-code')" class="absolute top-2.5 right-2.5 text-xs px-2.5 py-1 bg-dark-muted rounded-md text-slate-300 hover:text-white transition flex items-center">
+                <i class="fa-regular fa-copy mr-1"></i>Copy
+              </button>
+              <pre id="step1-code" class="p-4 rounded-xl bg-dark-bg border border-dark-border text-xs font-mono text-slate-200 overflow-x-auto"><code>git clone https://github.com/divmora/otel-aws-log-processor.git
+cd otel-aws-log-processor
+
+# Build stripped ARM64 bootstrap binary and package lambda.zip
+make lambda-package</code></pre>
+            </div>
+          </div>
+
+          <!-- Step 2 -->
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-3">
+            <div class="flex items-center space-x-3">
+              <span class="w-7 h-7 rounded-full bg-brand-500/20 text-brand-400 font-mono font-bold flex items-center justify-center text-xs">2</span>
+              <h3 class="text-base font-bold text-white">Create SQS Queue & IAM Policy</h3>
+            </div>
+            <p class="text-xs text-slate-400">
+              Create an SQS queue to buffer log notifications and attach the minimum IAM permissions:
+            </p>
+            <div class="relative">
+              <button onclick="copyCode('step2-code')" class="absolute top-2.5 right-2.5 text-xs px-2.5 py-1 bg-dark-muted rounded-md text-slate-300 hover:text-white transition flex items-center">
+                <i class="fa-regular fa-copy mr-1"></i>Copy
+              </button>
+              <pre id="step2-code" class="p-4 rounded-xl bg-dark-bg border border-dark-border text-xs font-mono text-slate-200 overflow-x-auto"><code># Create SQS Queue
+aws sqs create-queue \
+  --queue-name aws-access-logs-otlp-queue \
+  --attributes VisibilityTimeout=360,MessageRetentionPeriod=86400</code></pre>
+            </div>
+          </div>
+
+          <!-- Step 3 -->
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-3">
+            <div class="flex items-center space-x-3">
+              <span class="w-7 h-7 rounded-full bg-brand-500/20 text-brand-400 font-mono font-bold flex items-center justify-center text-xs">3</span>
+              <h3 class="text-base font-bold text-white">Deploy AWS Lambda Function</h3>
+            </div>
+            <p class="text-xs text-slate-400">
+              Deploy the function configured with your OTLP HTTP logs receiver endpoint:
+            </p>
+            <div class="relative">
+              <button onclick="copyCode('step3-code')" class="absolute top-2.5 right-2.5 text-xs px-2.5 py-1 bg-dark-muted rounded-md text-slate-300 hover:text-white transition flex items-center">
+                <i class="fa-regular fa-copy mr-1"></i>Copy
+              </button>
+              <pre id="step3-code" class="p-4 rounded-xl bg-dark-bg border border-dark-border text-xs font-mono text-slate-200 overflow-x-auto"><code>aws lambda create-function \
+  --function-name otel-aws-log-processor \
+  --runtime provided.al2023 \
+  --handler bootstrap \
+  --architectures arm64 \
+  --zip-file fileb://lambda.zip \
+  --role arn:aws:iam::123456789012:role/otel-log-processor-lambda-role \
+  --timeout 300 \
+  --memory-size 512 \
+  --environment "Variables={
+      OTLP_HTTP_LOGS_ENDPOINT=https://ingest.your-collector.com/v1/logs,
+      MAX_BATCH_SIZE=500,
+      MAX_CONCURRENT=10
+    }"</code></pre>
+            </div>
+          </div>
+
+          <!-- Step 4 -->
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-3">
+            <div class="flex items-center space-x-3">
+              <span class="w-7 h-7 rounded-full bg-brand-500/20 text-brand-400 font-mono font-bold flex items-center justify-center text-xs">4</span>
+              <h3 class="text-base font-bold text-white">Configure SQS Trigger with Partial Failure Handling</h3>
+            </div>
+            <p class="text-xs text-slate-400">
+              Wire the SQS queue to Lambda with <code class="text-brand-300 font-mono">ReportBatchItemFailures</code> enabled:
+            </p>
+            <div class="relative">
+              <button onclick="copyCode('step4-code')" class="absolute top-2.5 right-2.5 text-xs px-2.5 py-1 bg-dark-muted rounded-md text-slate-300 hover:text-white transition flex items-center">
+                <i class="fa-regular fa-copy mr-1"></i>Copy
+              </button>
+              <pre id="step4-code" class="p-4 rounded-xl bg-dark-bg border border-dark-border text-xs font-mono text-slate-200 overflow-x-auto"><code>aws lambda create-event-source-mapping \
+  --function-name otel-aws-log-processor \
+  --event-source-arn arn:aws:sqs:us-east-1:123456789012:aws-access-logs-otlp-queue \
+  --batch-size 10 \
+  --function-response-types ReportBatchItemFailures</code></pre>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- Supported AWS Log Types Deep Dive -->
+      <section id="logs-section" class="space-y-6 pt-6 border-t border-dark-border">
+        <div class="space-y-2">
+          <div class="flex items-center space-x-2">
+            <i class="fa-solid fa-layer-group text-2xl text-sky-400"></i>
+            <h2 class="text-2xl font-bold text-white">Supported AWS Log Formats</h2>
+          </div>
+          <p class="text-sm text-slate-400">
+            Learn how each AWS access log format is detected, parsed, and converted to OpenTelemetry semantic conventions.
+          </p>
+        </div>
+
+        <!-- Log Type Tabs -->
+        <div class="flex flex-wrap gap-2 border-b border-dark-border pb-3">
+          <button onclick="switchLogTab('alb')" id="tab-btn-alb" class="tab-btn active px-4 py-2 rounded-xl text-xs font-semibold border border-dark-border flex items-center space-x-2 transition">
+            <i class="fa-solid fa-server text-sky-400"></i>
+            <span>Application Load Balancer (ALB)</span>
+          </button>
+          <button onclick="switchLogTab('nlb')" id="tab-btn-nlb" class="tab-btn px-4 py-2 rounded-xl text-xs font-semibold border border-dark-border text-slate-400 hover:text-white flex items-center space-x-2 transition">
+            <i class="fa-solid fa-network-wired text-indigo-400"></i>
+            <span>Network Load Balancer (NLB)</span>
+          </button>
+          <button onclick="switchLogTab('cloudfront')" id="tab-btn-cloudfront" class="tab-btn px-4 py-2 rounded-xl text-xs font-semibold border border-dark-border text-slate-400 hover:text-white flex items-center space-x-2 transition">
+            <i class="fa-solid fa-globe text-cyan-400"></i>
+            <span>CloudFront (Gzip & Parquet)</span>
+          </button>
+          <button onclick="switchLogTab('waf')" id="tab-btn-waf" class="tab-btn px-4 py-2 rounded-xl text-xs font-semibold border border-dark-border text-slate-400 hover:text-white flex items-center space-x-2 transition">
+            <i class="fa-solid fa-shield-halved text-rose-400"></i>
+            <span>AWS WAF (JSON)</span>
+          </button>
+        </div>
+
+        <!-- Tab Content: ALB -->
+        <div id="tab-content-alb" class="space-y-6">
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-4">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h3 class="text-lg font-bold text-white">Application Load Balancer (ALB) Access Logs</h3>
+                <span class="text-xs text-slate-400">Files: <code class="text-sky-300 font-mono">*.log</code>, <code class="text-sky-300 font-mono">*.log.gz</code></span>
+              </div>
+              <span class="px-3 py-1 rounded-full bg-sky-500/10 text-sky-400 border border-sky-500/20 text-xs font-mono self-start sm:self-auto">Regex Streaming Parser</span>
+            </div>
+            
+            <p class="text-xs text-slate-300 leading-relaxed">
+              ALB logs provide granular telemetry for HTTP and HTTPS traffic. The processor parses standard ALB log entries, extracts end-to-end processing latencies (<code class="text-slate-200">request_processing_time</code>, <code class="text-slate-200">target_processing_time</code>, <code class="text-slate-200">response_processing_time</code>), converts AWS trace IDs (<code class="text-slate-200">Root=1-...</code>) into standard 32-hex character OpenTelemetry <code class="text-slate-200">traceId</code>s, and scopes logs by TargetGroup ARN.
+            </p>
+
+            <div class="space-y-2">
+              <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Sample Raw Log Line:</span>
+              <div class="relative">
+                <button onclick="copyCode('alb-raw-sample')" class="absolute top-2 right-2 text-xs px-2 py-1 bg-dark-muted rounded text-slate-300 hover:text-white transition">
+                  <i class="fa-regular fa-copy mr-1"></i>Copy
+                </button>
+                <pre id="alb-raw-sample" class="p-3 rounded-lg bg-dark-bg border border-dark-border text-xs font-mono text-slate-300 overflow-x-auto leading-relaxed"><code>https 2026-09-06T12:34:56.789012Z app/my-load-balancer/50dc6c495c0c9188 192.168.1.100:44322 10.0.1.50:8080 0.001 0.015 0.000 200 200 482 1024 "GET https://api.example.com:443/v1/checkout?cart=123 HTTP/1.1" "Mozilla/5.0" ECDHE-RSA-AES128-GCM-SHA256 TLSv1.2 arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/my-targets/73e2d6bc24d8a067 "Root=1-64abc123-abcdef0123456789abcdef01" "api.example.com" "arn:aws:acm:us-east-1:123456789012:certificate/uuid" 0 2026-09-06T12:34:56.773000Z "forward" "-" "-" "10.0.1.50:8080" "200" "-" "-"</code></pre>
+              </div>
+            </div>
+
+            <div class="space-y-2">
+              <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Converted OTLP LogRecord:</span>
+              <div class="relative">
+                <button onclick="copyCode('alb-otlp-sample')" class="absolute top-2 right-2 text-xs px-2 py-1 bg-dark-muted rounded text-slate-300 hover:text-white transition">
+                  <i class="fa-regular fa-copy mr-1"></i>Copy
+                </button>
+                <pre id="alb-otlp-sample" class="p-3 rounded-lg bg-dark-bg border border-dark-border text-xs font-mono text-emerald-300 overflow-x-auto leading-relaxed"><code>{
+  "timeUnixNano": "1788784496789012000",
+  "severityNumber": 9,
+  "severityText": "INFO",
+  "body": { "stringValue": "GET https://api.example.com:443/v1/checkout?cart=123 HTTP/1.1" },
+  "traceId": "64abc123abcdef0123456789abcdef01",
+  "spanId": "f90123bc89da4321",
+  "attributes": [
+    { "key": "http.request.method", "value": { "stringValue": "GET" } },
+    { "key": "http.response.status_code", "value": { "intValue": "200" } },
+    { "key": "url.full", "value": { "stringValue": "https://api.example.com:443/v1/checkout?cart=123" } },
+    { "key": "url.path", "value": { "stringValue": "/v1/checkout" } },
+    { "key": "url.query", "value": { "stringValue": "cart=123" } },
+    { "key": "client.address", "value": { "stringValue": "192.168.1.100" } },
+    { "key": "client.port", "value": { "intValue": "44322" } },
+    { "key": "server.address", "value": { "stringValue": "api.example.com" } },
+    { "key": "server.socket.address", "value": { "stringValue": "10.0.1.50" } },
+    { "key": "server.socket.port", "value": { "intValue": "8080" } },
+    { "key": "user_agent.original", "value": { "stringValue": "Mozilla/5.0" } },
+    { "key": "aws.alb.target_processing_time", "value": { "doubleValue": 0.015 } }
+  ]
+}</code></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab Content: NLB -->
+        <div id="tab-content-nlb" class="space-y-6 hidden">
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-4">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h3 class="text-lg font-bold text-white">Network Load Balancer (NLB) Flow Logs</h3>
+                <span class="text-xs text-slate-400">Files: <code class="text-indigo-300 font-mono">*.log</code>, <code class="text-indigo-300 font-mono">*.log.gz</code></span>
+              </div>
+              <span class="px-3 py-1 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-xs font-mono self-start sm:self-auto">TLS & TCP Layer 4 Parser</span>
+            </div>
+
+            <p class="text-xs text-slate-300 leading-relaxed">
+              NLB access logs capture Layer 4 TCP and TLS connections, including TLS handshake duration, ALPN negotiated protocols, cipher suites, incoming TLS alert codes, and byte counts transmitted across connections.
+            </p>
+
+            <div class="space-y-2">
+              <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Sample Raw Log Line:</span>
+              <div class="relative">
+                <button onclick="copyCode('nlb-raw-sample')" class="absolute top-2 right-2 text-xs px-2 py-1 bg-dark-muted rounded text-slate-300 hover:text-white transition">
+                  <i class="fa-regular fa-copy mr-1"></i>Copy
+                </button>
+                <pre id="nlb-raw-sample" class="p-3 rounded-lg bg-dark-bg border border-dark-border text-xs font-mono text-slate-300 overflow-x-auto leading-relaxed"><code>tls 2.0 2026-09-06T12:34:56Z net/my-nlb/1234567890abcdef sub-12345678 198.51.100.25:52134 10.0.2.100:443 15.201 2.304 4096 8192 - arn:aws:acm:us-east-1:123456789012:certificate/uuid 0 ECDHE-RSA-AES128-GCM-SHA256 TLSv1.3 - db.example.com h2 - 2026-09-06T12:34:40Z</code></pre>
+              </div>
+            </div>
+
+            <div class="space-y-2">
+              <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Key Attributes Mapped:</span>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div class="p-3 rounded-lg bg-dark-bg border border-dark-border space-y-1">
+                  <span class="text-indigo-400 font-mono">aws.nlb.tls_handshake_time</span>
+                  <p class="text-slate-400">Duration in milliseconds for TLS negotiation completion.</p>
+                </div>
+                <div class="p-3 rounded-lg bg-dark-bg border border-dark-border space-y-1">
+                  <span class="text-indigo-400 font-mono">aws.nlb.alpn_frontend_protocol</span>
+                  <p class="text-slate-400">Application Layer Protocol Negotiation (e.g. h2, http/1.1).</p>
+                </div>
+                <div class="p-3 rounded-lg bg-dark-bg border border-dark-border space-y-1">
+                  <span class="text-indigo-400 font-mono">tls.cipher_suite / tls.protocol.version</span>
+                  <p class="text-slate-400">Active TLS cryptographic suite and version (e.g. TLSv1.3).</p>
+                </div>
+                <div class="p-3 rounded-lg bg-dark-bg border border-dark-border space-y-1">
+                  <span class="text-indigo-400 font-mono">client.address / server.address</span>
+                  <p class="text-slate-400">Client source socket and backend NLB target socket addresses.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab Content: CloudFront -->
+        <div id="tab-content-cloudfront" class="space-y-6 hidden">
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-4">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h3 class="text-lg font-bold text-white">Amazon CloudFront CDN Access Logs</h3>
+                <span class="text-xs text-slate-400">Files: <code class="text-cyan-300 font-mono">*.gz</code> (W3C standard), <code class="text-cyan-300 font-mono">*.parquet</code> (Columnar)</span>
+              </div>
+              <span class="px-3 py-1 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 text-xs font-mono self-start sm:self-auto">Gzip & Parquet Reader</span>
+            </div>
+
+            <p class="text-xs text-slate-300 leading-relaxed">
+              Processes both legacy standard W3C tab-delimited gzipped logs and modern AWS CloudFront Parquet log files. Automatically identifies distribution domains, edge location pop codes (<code class="text-slate-200">IAD79-C1</code>), cache outcomes (<code class="text-slate-200">Hit</code>, <code class="text-slate-200">Miss</code>, <code class="text-slate-200">RefreshHit</code>), and time-to-first-byte measurements.
+            </p>
+
+            <div class="space-y-2">
+              <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Sample Raw Log Line (W3C Standard):</span>
+              <div class="relative">
+                <button onclick="copyCode('cf-raw-sample')" class="absolute top-2 right-2 text-xs px-2 py-1 bg-dark-muted rounded text-slate-300 hover:text-white transition">
+                  <i class="fa-regular fa-copy mr-1"></i>Copy
+                </button>
+                <pre id="cf-raw-sample" class="p-3 rounded-lg bg-dark-bg border border-dark-border text-xs font-mono text-slate-300 overflow-x-auto leading-relaxed"><code>2026-09-06	12:34:56	IAD79-C1	3842	203.0.113.42	GET	d111111abcdef8.cloudfront.net	/static/app.js	200	https://example.com/	Mozilla/5.0	-	-	Hit	64abc123-request-id	example.com	https	1240	0.012	-	TLSv1.3	TLS_AES_128_GCM_SHA256	Hit	HTTP/2.0	-	-	51240	0.004	Hit	application/javascript	3842	-	-</code></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab Content: WAF -->
+        <div id="tab-content-waf" class="space-y-6 hidden">
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-4">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h3 class="text-lg font-bold text-white">AWS WAF (Web Application Firewall) JSON Logs</h3>
+                <span class="text-xs text-slate-400">Files: <code class="text-rose-300 font-mono">*.json</code>, <code class="text-rose-300 font-mono">*.gz</code></span>
+              </div>
+              <span class="px-3 py-1 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/20 text-xs font-mono self-start sm:self-auto">JSON Streaming Parser</span>
+            </div>
+
+            <p class="text-xs text-slate-300 leading-relaxed">
+              AWS WAF logs contain structured JSON security events detailing terminating rules, actions (<code class="text-slate-200">ALLOW</code>, <code class="text-slate-200">BLOCK</code>, <code class="text-slate-200">CAPTCHA</code>, <code class="text-slate-200">COUNT</code>), rule group evaluations, JA3 / JA4 client TLS fingerprints, and country ISO codes. Blocks are promoted to <code class="text-amber-300 font-mono">WARN</code> severity in OTel.
+            </p>
+
+            <div class="space-y-2">
+              <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Sample OTLP Representation for Blocked Threat:</span>
+              <div class="relative">
+                <button onclick="copyCode('waf-otlp-sample')" class="absolute top-2 right-2 text-xs px-2 py-1 bg-dark-muted rounded text-slate-300 hover:text-white transition">
+                  <i class="fa-regular fa-copy mr-1"></i>Copy
+                </button>
+                <pre id="waf-otlp-sample" class="p-3 rounded-lg bg-dark-bg border border-dark-border text-xs font-mono text-rose-300 overflow-x-auto leading-relaxed"><code>{
+  "severityNumber": 13,
+  "severityText": "WARN",
+  "body": { "stringValue": "POST /login BLOCK" },
+  "attributes": [
+    { "key": "aws.waf.action", "value": { "stringValue": "BLOCK" } },
+    { "key": "aws.waf.terminating_rule_id", "value": { "stringValue": "AWS-AWSManagedRulesCommonRuleSet" } },
+    { "key": "tls.client.ja4", "value": { "stringValue": "t13d1516h2_8daaf6152771_b4b60e34b9d0" } },
+    { "key": "client.geo.country_iso_code", "value": { "stringValue": "US" } },
+    { "key": "client.address", "value": { "stringValue": "198.51.100.77" } },
+    { "key": "http.request.method", "value": { "stringValue": "POST" } },
+    { "key": "url.path", "value": { "stringValue": "/login" } }
+  ]
+}</code></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- S3 Path Matching Rules Table -->
+        <div id="s3-patterns" class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-3">
+          <div class="flex items-center space-x-2">
+            <i class="fa-solid fa-filter text-amber-400"></i>
+            <h3 class="text-base font-bold text-white">S3 Object Key Detection Registry</h3>
+          </div>
+          <p class="text-xs text-slate-400">
+            The processor dispatches log files to specific parsers using high-performance string & regex matching on the S3 bucket and object key:
+          </p>
+
+          <div class="overflow-x-auto rounded-xl border border-dark-border">
+            <table class="w-full text-left text-xs text-slate-300 font-mono">
+              <thead class="bg-dark-muted/40 text-slate-200 uppercase tracking-wider text-[11px]">
+                <tr>
+                  <th class="px-4 py-3">Processor</th>
+                  <th class="px-4 py-3">Bucket Constraint</th>
+                  <th class="px-4 py-3">Key Pattern / Prefix</th>
+                  <th class="px-4 py-3">File Extensions</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-dark-border bg-dark-bg/60">
+                <tr>
+                  <td class="px-4 py-3 text-sky-400 font-semibold font-sans">ALB</td>
+                  <td class="px-4 py-3 text-slate-400">Any</td>
+                  <td class="px-4 py-3 text-slate-200">Contains <code class="text-sky-300">/elasticloadbalancing/</code> AND <code class="text-sky-300">_app.</code></td>
+                  <td class="px-4 py-3 text-slate-300">.log, .log.gz</td>
+                </tr>
+                <tr>
+                  <td class="px-4 py-3 text-indigo-400 font-semibold font-sans">NLB</td>
+                  <td class="px-4 py-3 text-slate-400">Any</td>
+                  <td class="px-4 py-3 text-slate-200">Contains <code class="text-indigo-300">/elasticloadbalancing/</code> AND <code class="text-indigo-300">_net.</code></td>
+                  <td class="px-4 py-3 text-slate-300">.log, .log.gz</td>
+                </tr>
+                <tr>
+                  <td class="px-4 py-3 text-cyan-400 font-semibold font-sans">CloudFront</td>
+                  <td class="px-4 py-3 text-slate-400">Any</td>
+                  <td class="px-4 py-3 text-slate-200">Prefix <code class="text-cyan-300">AWSLogs/</code> AND <code class="text-cyan-300">/CloudFront/</code></td>
+                  <td class="px-4 py-3 text-slate-300">.gz, .parquet</td>
+                </tr>
+                <tr>
+                  <td class="px-4 py-3 text-rose-400 font-semibold font-sans">AWS WAF</td>
+                  <td class="px-4 py-3 text-amber-300">Starts with <code class="text-rose-300">aws-waf-logs-</code></td>
+                  <td class="px-4 py-3 text-slate-200">Contains <code class="text-rose-300">/WAFLogs/</code> AND <code class="text-rose-300">_waflogs_</code></td>
+                  <td class="px-4 py-3 text-slate-300">.json, .gz</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="text-[11px] text-slate-500 italic">
+            Note: AWS requires S3 destination buckets for WAF logs to strictly begin with the prefix <code class="text-slate-400">aws-waf-logs-</code>.
+          </p>
+        </div>
+
+      </section>
+
+      <!-- Deployment & Infrastructure as Code (IaC) Section -->
+      <section id="deployment" class="space-y-6 pt-6 border-t border-dark-border">
+        <div class="space-y-2">
+          <div class="flex items-center space-x-2">
+            <i class="fa-solid fa-cubes text-2xl text-purple-400"></i>
+            <h2 class="text-2xl font-bold text-white">Infrastructure as Code & Deployment</h2>
+          </div>
+          <p class="text-sm text-slate-400">
+            Production-grade templates for deploying the Lambda function, SQS buffer queue, and IAM policies.
+          </p>
+        </div>
+
+        <!-- IaC Selector Tabs -->
+        <div class="flex flex-wrap gap-2 border-b border-dark-border pb-3">
+          <button onclick="switchIacTab('terraform')" id="tab-btn-terraform" class="subtab-btn active px-4 py-2 rounded-xl text-xs font-semibold border border-dark-border flex items-center space-x-2 transition">
+            <i class="fa-solid fa-shapes text-purple-400"></i>
+            <span>Terraform (HCL)</span>
+          </button>
+          <button onclick="switchIacTab('cloudformation')" id="tab-btn-cloudformation" class="subtab-btn px-4 py-2 rounded-xl text-xs font-semibold border border-dark-border text-slate-400 hover:text-white flex items-center space-x-2 transition">
+            <i class="fa-solid fa-fire text-orange-400"></i>
+            <span>CloudFormation / SAM</span>
+          </button>
+          <button onclick="switchIacTab('cli')" id="tab-btn-cli" class="subtab-btn px-4 py-2 rounded-xl text-xs font-semibold border border-dark-border text-slate-400 hover:text-white flex items-center space-x-2 transition">
+            <i class="fa-solid fa-terminal text-emerald-400"></i>
+            <span>AWS CLI Script</span>
+          </button>
+          <button onclick="switchIacTab('docker')" id="tab-btn-docker" class="subtab-btn px-4 py-2 rounded-xl text-xs font-semibold border border-dark-border text-slate-400 hover:text-white flex items-center space-x-2 transition">
+            <i class="fa-brands fa-docker text-sky-400"></i>
+            <span>Docker Container</span>
+          </button>
+        </div>
+
+        <!-- Tab 1: Terraform -->
+        <div id="tab-content-terraform" class="space-y-4">
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-3">
+            <div class="flex items-center justify-between text-xs text-slate-400 border-b border-dark-border pb-3">
+              <span class="font-mono flex items-center"><i class="fa-solid fa-file-code mr-2 text-purple-400"></i>main.tf</span>
+              <button onclick="copyCode('tf-code')" class="hover:text-white px-2 py-1 bg-dark-muted rounded text-xs transition flex items-center">
+                <i class="fa-regular fa-copy mr-1"></i>Copy Terraform
+              </button>
+            </div>
+            <pre id="tf-code" class="p-4 rounded-xl bg-dark-bg border border-dark-border text-xs font-mono text-slate-300 overflow-x-auto leading-relaxed code-scroll"><code>terraform {
+  required_version = "&gt;= 1.5.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~&gt; 5.0"
+    }
+  }
+}
+
+variable "otlp_endpoint" {
+  type        = string
+  description = "Destination HTTP endpoint for OTLP logs"
+  default     = "https://ingest.signoz.cloud:443/v1/logs"
+}
+
+# 1. Dead Letter Queue & Primary Ingestion SQS Queue
+resource "aws_sqs_queue" "dlq" {
+  name                      = "otel-log-processor-dlq"
+  message_retention_seconds = 1209600 # 14 days
+}
+
+resource "aws_sqs_queue" "log_queue" {
+  name                       = "otel-log-processor-queue"
+  visibility_timeout_seconds = 360  # Lambda timeout (300s) + 60s buffer
+  message_retention_seconds  = 86400
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.dlq.arn
+    maxReceiveCount     = 5
+  })
+}
+
+# 2. IAM Role & Least Privilege Policies
+resource "aws_iam_role" "lambda_role" {
+  name = "otel-log-processor-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_policy" "lambda_policy" {
+  name = "otel-log-processor-policy"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "S3LogBucketAccess"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = ["arn:aws:s3:::*/*"]
+      },
+      {
+        Sid    = "SQSTriggerAccess"
+        Effect = "Allow"
+        Action = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes"
+        ]
+        Resource = [aws_sqs_queue.log_queue.arn]
+      },
+      {
+        Sid    = "CloudWatchLogs"
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "arn:aws:logs:*:*:*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "attach" {
+  role       = aws_iam_role.lambda_role.name
+  policy_arn = aws_iam_policy.lambda_policy.arn
+}
+
+# 3. AWS Lambda Function (ARM64, provided.al2023)
+resource "aws_lambda_function" "processor" {
+  function_name = "otel-aws-log-processor"
+  role          = aws_iam_role.lambda_role.arn
+  handler       = "bootstrap"
+  runtime       = "provided.al2023"
+  architectures = ["arm64"]
+  memory_size   = 512
+  timeout       = 300
+
+  filename         = "lambda.zip"
+  source_code_hash = filebase64sha256("lambda.zip")
+
+  environment {
+    variables = {
+      OTLP_HTTP_LOGS_ENDPOINT = var.otlp_endpoint
+      MAX_BATCH_SIZE          = "500"
+      MAX_RETRIES             = "3"
+      MAX_CONCURRENT          = "10"
+    }
+  }
+}
+
+# 4. SQS Event Source Mapping with Partial Batch Failure Reporting
+resource "aws_lambda_event_source_mapping" "sqs_trigger" {
+  event_source_arn                   = aws_sqs_queue.log_queue.arn
+  function_name                      = aws_lambda_function.processor.arn
+  batch_size                         = 10
+  maximum_batching_window_in_seconds = 10
+  function_response_types            = ["ReportBatchItemFailures"]
+}</code></pre>
+          </div>
+        </div>
+
+        <!-- Tab 2: CloudFormation -->
+        <div id="tab-content-cloudformation" class="space-y-4 hidden">
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-3">
+            <div class="flex items-center justify-between text-xs text-slate-400 border-b border-dark-border pb-3">
+              <span class="font-mono flex items-center"><i class="fa-solid fa-file-code mr-2 text-orange-400"></i>template.yaml (CloudFormation / SAM)</span>
+              <button onclick="copyCode('cfn-code')" class="hover:text-white px-2 py-1 bg-dark-muted rounded text-xs transition flex items-center">
+                <i class="fa-regular fa-copy mr-1"></i>Copy CloudFormation
+              </button>
+            </div>
+            <pre id="cfn-code" class="p-4 rounded-xl bg-dark-bg border border-dark-border text-xs font-mono text-slate-300 overflow-x-auto leading-relaxed code-scroll"><code>AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Production Deployment of otel-aws-log-processor
+
+Parameters:
+  OtlpEndpoint:
+    Type: String
+    Default: "http://otel-collector:4318/v1/logs"
+    Description: HTTP endpoint for OTLP log ingestion
+
+Resources:
+  LogDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: otel-log-processor-dlq
+      MessageRetentionPeriod: 1209600
+
+  LogIngestionQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: otel-log-processor-queue
+      VisibilityTimeout: 360
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt LogDeadLetterQueue.Arn
+        maxReceiveCount: 5
+
+  OtelLogProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: otel-aws-log-processor
+      CodeUri: ./lambda.zip
+      Handler: bootstrap
+      Runtime: provided.al2023
+      Architectures: [arm64]
+      MemorySize: 512
+      Timeout: 300
+      Environment:
+        Variables:
+          OTLP_HTTP_LOGS_ENDPOINT: !Ref OtlpEndpoint
+          MAX_BATCH_SIZE: 500
+          MAX_RETRIES: 3
+          MAX_CONCURRENT: 10
+      Policies:
+        - S3ReadPolicy:
+            BucketName: "*"
+        - SQSPollerPolicy:
+            QueueName: !GetAtt LogIngestionQueue.QueueName
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt LogIngestionQueue.Arn
+            BatchSize: 10
+            FunctionResponseTypes:
+              - ReportBatchItemFailures</code></pre>
+          </div>
+        </div>
+
+        <!-- Tab 3: CLI Script -->
+        <div id="tab-content-cli" class="space-y-4 hidden">
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-3">
+            <div class="flex items-center justify-between text-xs text-slate-400 border-b border-dark-border pb-3">
+              <span class="font-mono flex items-center"><i class="fa-solid fa-terminal mr-2 text-emerald-400"></i>deploy.sh (AWS CLI)</span>
+              <button onclick="copyCode('cli-code')" class="hover:text-white px-2 py-1 bg-dark-muted rounded text-xs transition flex items-center">
+                <i class="fa-regular fa-copy mr-1"></i>Copy Script
+              </button>
+            </div>
+            <pre id="cli-code" class="p-4 rounded-xl bg-dark-bg border border-dark-border text-xs font-mono text-slate-300 overflow-x-auto leading-relaxed code-scroll"><code>#!/usr/bin/env bash
+set -euo pipefail
+
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+REGION=${AWS_REGION:-us-east-1}
+ROLE_NAME="otel-log-processor-lambda-role"
+QUEUE_NAME="otel-log-processor-queue"
+FN_NAME="otel-aws-log-processor"
+
+echo "1. Building Lambda zip package..."
+make lambda-package
+
+echo "2. Creating SQS queue..."
+QUEUE_URL=$(aws sqs create-queue --queue-name "$QUEUE_NAME" \
+  --attributes VisibilityTimeout=360 --query QueueUrl --output text)
+QUEUE_ARN=$(aws sqs get-queue-attributes --queue-url "$QUEUE_URL" \
+  --attribute-names QueueArn --query 'Attributes.QueueArn' --output text)
+
+echo "3. Creating Lambda Execution Role..."
+cat &lt;&lt;EOF &gt; /tmp/lambda-trust.json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Service": "lambda.amazonaws.com"},
+    "Action": "sts:AssumeRole"
+  }]
+}
+EOF
+
+ROLE_ARN=$(aws iam create-role --role-name "$ROLE_NAME" \
+  --assume-role-policy-document file:///tmp/lambda-trust.json \
+  --query 'Role.Arn' --output text 2&gt;/dev/null || \
+  aws iam get-role --role-name "$ROLE_NAME" --query 'Role.Arn' --output text)
+
+echo "4. Deploying Lambda Function..."
+aws lambda create-function \
+  --function-name "$FN_NAME" \
+  --runtime provided.al2023 \
+  --handler bootstrap \
+  --architectures arm64 \
+  --zip-file fileb://lambda.zip \
+  --role "$ROLE_ARN" \
+  --timeout 300 \
+  --memory-size 512 \
+  --environment "Variables={OTLP_HTTP_LOGS_ENDPOINT=https://ingest.signoz.cloud:443/v1/logs,MAX_BATCH_SIZE=500}"
+
+echo "5. Connecting SQS Event Source Mapping..."
+aws lambda create-event-source-mapping \
+  --function-name "$FN_NAME" \
+  --event-source-arn "$QUEUE_ARN" \
+  --batch-size 10 \
+  --function-response-types ReportBatchItemFailures
+
+echo "✓ Deployment complete!"</code></pre>
+          </div>
+        </div>
+
+        <!-- Tab 4: Docker Container -->
+        <div id="tab-content-docker" class="space-y-4 hidden">
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-3">
+            <div class="flex items-center justify-between text-xs text-slate-400 border-b border-dark-border pb-3">
+              <span class="font-mono flex items-center"><i class="fa-brands fa-docker mr-2 text-sky-400"></i>Dockerfile & Container Image</span>
+              <button onclick="copyCode('docker-code')" class="hover:text-white px-2 py-1 bg-dark-muted rounded text-xs transition flex items-center">
+                <i class="fa-regular fa-copy mr-1"></i>Copy Commands
+              </button>
+            </div>
+            <pre id="docker-code" class="p-4 rounded-xl bg-dark-bg border border-dark-border text-xs font-mono text-slate-300 overflow-x-auto leading-relaxed code-scroll"><code># Build Docker image locally
+make docker-build
+
+# Or build multi-arch (AMD64 + ARM64)
+make docker-build-multiarch
+
+# Push image to Amazon ECR
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 123456789012.dkr.ecr.us-east-1.amazonaws.com
+docker tag otel-aws-log-processor:latest 123456789012.dkr.ecr.us-east-1.amazonaws.com/otel-aws-log-processor:latest
+docker push 123456789012.dkr.ecr.us-east-1.amazonaws.com/otel-aws-log-processor:latest
+
+# Deploy Lambda using Container Image package type
+aws lambda create-function \
+  --function-name otel-aws-log-processor \
+  --package-type Image \
+  --code ImageUri=123456789012.dkr.ecr.us-east-1.amazonaws.com/otel-aws-log-processor:latest \
+  --role arn:aws:iam::123456789012:role/otel-log-processor-lambda-role \
+  --timeout 300 \
+  --memory-size 512</code></pre>
+          </div>
+        </div>
+
+        <!-- IAM Permissions Reference Box -->
+        <div id="iam-permissions" class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-3">
+          <div class="flex items-center space-x-2">
+            <i class="fa-solid fa-lock text-yellow-400"></i>
+            <h3 class="text-base font-bold text-white">Least-Privilege IAM Policy</h3>
+          </div>
+          <p class="text-xs text-slate-400">
+            Attach this policy to the Lambda execution role. Ensure the S3 bucket resource matches your access log storage locations:
+          </p>
+          <div class="relative">
+            <button onclick="copyCode('iam-json-code')" class="absolute top-2.5 right-2.5 text-xs px-2.5 py-1 bg-dark-muted rounded-md text-slate-300 hover:text-white transition flex items-center">
+              <i class="fa-regular fa-copy mr-1"></i>Copy Policy JSON
+            </button>
+            <pre id="iam-json-code" class="p-4 rounded-xl bg-dark-bg border border-dark-border text-xs font-mono text-slate-300 overflow-x-auto"><code>{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "S3LogBucketAccess",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject"],
+      "Resource": "arn:aws:s3:::&lt;your-aws-logs-bucket&gt;/*"
+    },
+    {
+      "Sid": "SQSTriggerAccess",
+      "Effect": "Allow",
+      "Action": [
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:GetQueueAttributes"
+      ],
+      "Resource": "arn:aws:sqs:&lt;region&gt;:&lt;account-id&gt;:&lt;your-queue-name&gt;"
+    },
+    {
+      "Sid": "CloudWatchLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:*:*:*"
+    }
+  ]
+}</code></pre>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- Destination Guides & Integrations -->
+      <section id="destinations" class="space-y-6 pt-6 border-t border-dark-border">
+        <div class="space-y-2">
+          <div class="flex items-center space-x-2">
+            <i class="fa-solid fa-share-nodes text-2xl text-pink-400"></i>
+            <h2 class="text-2xl font-bold text-white">Destination Guides & Backends</h2>
+          </div>
+          <p class="text-sm text-slate-400">
+            Configure your OTLP HTTP receiver endpoint across popular observability platforms.
+          </p>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+          <!-- OpenTelemetry Collector Card -->
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-3">
+            <div class="flex items-center space-x-2">
+              <div class="w-8 h-8 rounded-lg bg-orange-500/10 text-orange-400 flex items-center justify-center font-bold">
+                <i class="fa-solid fa-circle-nodes"></i>
+              </div>
+              <h3 class="font-bold text-white text-sm">OpenTelemetry Collector</h3>
+            </div>
+            <p class="text-xs text-slate-400 leading-relaxed">
+              Enable the <code class="text-orange-300 font-mono">otlp</code> receiver with the HTTP protocol in your collector configuration:
+            </p>
+            <pre class="p-3 rounded-xl bg-dark-bg border border-dark-border text-xs font-mono text-slate-300 overflow-x-auto"><code>receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+service:
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug, signoz, datadog]</code></pre>
+            <div class="text-[11px] text-slate-400 bg-dark-bg/60 p-2.5 rounded-lg border border-dark-border">
+              Set Lambda env: <code class="text-orange-300 font-mono">OTLP_HTTP_LOGS_ENDPOINT=http://&lt;collector-ip&gt;:4318/v1/logs</code>
+            </div>
+          </div>
+
+          <!-- SigNoz Card -->
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-3">
+            <div class="flex items-center space-x-2">
+              <div class="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-400 flex items-center justify-center font-bold">
+                <i class="fa-solid fa-chart-simple"></i>
+              </div>
+              <h3 class="font-bold text-white text-sm">SigNoz (Cloud & Self-Hosted)</h3>
+            </div>
+            <p class="text-xs text-slate-400 leading-relaxed">
+              Directly stream to SigNoz Cloud or self-hosted OtelCollector ingest endpoint:
+            </p>
+            <div class="space-y-2 text-xs font-mono">
+              <div class="p-2.5 rounded-lg bg-dark-bg border border-dark-border">
+                <span class="text-slate-400 block text-[10px] uppercase">SigNoz Cloud US:</span>
+                <code class="text-amber-300 text-xs break-all">https://ingest.us.signoz.cloud:443/v1/logs</code>
+              </div>
+              <div class="p-2.5 rounded-lg bg-dark-bg border border-dark-border">
+                <span class="text-slate-400 block text-[10px] uppercase">SigNoz Cloud IN:</span>
+                <code class="text-amber-300 text-xs break-all">https://ingest.in.signoz.cloud:443/v1/logs</code>
+              </div>
+            </div>
+            <p class="text-[11px] text-slate-400 leading-relaxed">
+              For self-hosted instances with Basic Auth, configure <code class="text-slate-200">BASIC_AUTH_USERNAME</code> and <code class="text-slate-200">BASIC_AUTH_PASSWORD</code>.
+            </p>
+          </div>
+
+          <!-- Coralogix Card -->
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-3">
+            <div class="flex items-center space-x-2">
+              <div class="w-8 h-8 rounded-lg bg-purple-500/10 text-purple-400 flex items-center justify-center font-bold">
+                <i class="fa-solid fa-cloud"></i>
+              </div>
+              <h3 class="font-bold text-white text-sm">Coralogix</h3>
+            </div>
+            <p class="text-xs text-slate-400 leading-relaxed">
+              Send OTLP logs directly to regional Coralogix endpoints:
+            </p>
+            <div class="p-2.5 rounded-lg bg-dark-bg border border-dark-border font-mono text-xs">
+              <span class="text-slate-400 block text-[10px] uppercase">US Regional Endpoint:</span>
+              <code class="text-purple-300 break-all">https://ingress.coralogix.us/v1/logs</code>
+            </div>
+            <p class="text-[11px] text-slate-400">
+              Or route via an internal OpenTelemetry Collector to inject the <code class="text-slate-200">Authorization: Bearer &lt;private-key&gt;</code> header.
+            </p>
+          </div>
+
+          <!-- Datadog Card -->
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-3">
+            <div class="flex items-center space-x-2">
+              <div class="w-8 h-8 rounded-lg bg-violet-500/10 text-violet-400 flex items-center justify-center font-bold">
+                <i class="fa-solid fa-dog"></i>
+              </div>
+              <h3 class="font-bold text-white text-sm">Datadog</h3>
+            </div>
+            <p class="text-xs text-slate-400 leading-relaxed">
+              Datadog Agent 7.35+ includes a native OTLP HTTP receiver:
+            </p>
+            <pre class="p-3 rounded-xl bg-dark-bg border border-dark-border text-xs font-mono text-slate-300 overflow-x-auto"><code># In datadog.yaml:
+otlp_config:
+  receiver:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318</code></pre>
+            <div class="text-[11px] text-slate-400 bg-dark-bg/60 p-2.5 rounded-lg border border-dark-border">
+              Set Lambda env: <code class="text-violet-300 font-mono">OTLP_HTTP_LOGS_ENDPOINT=http://&lt;datadog-agent&gt;:4318/v1/logs</code>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- Configuration Reference Section -->
+      <section id="configuration" class="space-y-6 pt-6 border-t border-dark-border">
+        <div class="space-y-2">
+          <div class="flex items-center space-x-2">
+            <i class="fa-solid fa-sliders text-2xl text-teal-400"></i>
+            <h2 class="text-2xl font-bold text-white">Environment Variables Reference</h2>
+          </div>
+          <p class="text-sm text-slate-400">
+            Tune batching, timeouts, concurrency, and authentication via Lambda environment variables.
+          </p>
+        </div>
+
+        <div class="overflow-x-auto rounded-2xl border border-dark-border">
+          <table class="w-full text-left text-xs text-slate-300 font-mono">
+            <thead class="bg-dark-muted/40 text-slate-200 uppercase tracking-wider text-[11px]">
+              <tr>
+                <th class="px-4 py-3.5">Variable</th>
+                <th class="px-4 py-3.5">Default</th>
+                <th class="px-4 py-3.5">Type</th>
+                <th class="px-4 py-3.5 font-sans">Description</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-dark-border bg-dark-card">
+              <tr>
+                <td class="px-4 py-3 text-brand-400 font-semibold">OTLP_HTTP_LOGS_ENDPOINT</td>
+                <td class="px-4 py-3 text-slate-400">http://localhost:4318/v1/logs</td>
+                <td class="px-4 py-3 text-emerald-400">string (URL)</td>
+                <td class="px-4 py-3 text-slate-300 font-sans">Full HTTP/HTTPS URL destination for OTLP JSON logs payload.</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 text-brand-400 font-semibold">BASIC_AUTH_USERNAME</td>
+                <td class="px-4 py-3 text-slate-500">""</td>
+                <td class="px-4 py-3 text-emerald-400">string</td>
+                <td class="px-4 py-3 text-slate-300 font-sans">Optional username for HTTP Basic Authentication header.</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 text-brand-400 font-semibold">BASIC_AUTH_PASSWORD</td>
+                <td class="px-4 py-3 text-slate-500">""</td>
+                <td class="px-4 py-3 text-emerald-400">string</td>
+                <td class="px-4 py-3 text-slate-300 font-sans">Optional password for HTTP Basic Authentication header.</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 text-brand-400 font-semibold">MAX_BATCH_SIZE</td>
+                <td class="px-4 py-3 text-slate-400">500</td>
+                <td class="px-4 py-3 text-amber-400">integer</td>
+                <td class="px-4 py-3 text-slate-300 font-sans">Maximum number of log records bundled into a single OTLP HTTP POST request.</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 text-brand-400 font-semibold">MAX_RETRIES</td>
+                <td class="px-4 py-3 text-slate-400">3</td>
+                <td class="px-4 py-3 text-amber-400">integer</td>
+                <td class="px-4 py-3 text-slate-300 font-sans">Number of retry attempts with exponential backoff on HTTP 5xx or network errors.</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 text-brand-400 font-semibold">MAX_CONCURRENT</td>
+                <td class="px-4 py-3 text-slate-400">10</td>
+                <td class="px-4 py-3 text-amber-400">integer</td>
+                <td class="px-4 py-3 text-slate-300 font-sans">Worker goroutine pool size for parallel S3 log file reading & HTTP batch sending.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Sizing & Performance Tuning -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+          <div class="p-4 rounded-xl bg-dark-card border border-dark-border space-y-2">
+            <div class="flex items-center justify-between">
+              <h4 class="font-bold text-white text-xs uppercase tracking-wider">Low Volume</h4>
+              <span class="text-[10px] px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300">&lt; 1M logs/day</span>
+            </div>
+            <ul class="text-xs text-slate-400 space-y-1 list-disc list-inside">
+              <li>Memory: <strong>256 MB</strong></li>
+              <li>MAX_BATCH_SIZE: <strong>250</strong></li>
+              <li>MAX_CONCURRENT: <strong>5</strong></li>
+            </ul>
+          </div>
+
+          <div class="p-4 rounded-xl bg-dark-card border border-brand-500/40 space-y-2 relative">
+            <div class="flex items-center justify-between">
+              <h4 class="font-bold text-brand-300 text-xs uppercase tracking-wider">Standard (Recommended)</h4>
+              <span class="text-[10px] px-2 py-0.5 rounded bg-brand-500/20 text-brand-300 font-medium">1M – 20M logs/day</span>
+            </div>
+            <ul class="text-xs text-slate-300 space-y-1 list-disc list-inside">
+              <li>Memory: <strong>512 MB</strong></li>
+              <li>MAX_BATCH_SIZE: <strong>500</strong></li>
+              <li>MAX_CONCURRENT: <strong>10</strong></li>
+            </ul>
+          </div>
+
+          <div class="p-4 rounded-xl bg-dark-card border border-dark-border space-y-2">
+            <div class="flex items-center justify-between">
+              <h4 class="font-bold text-white text-xs uppercase tracking-wider">High Scale</h4>
+              <span class="text-[10px] px-2 py-0.5 rounded bg-purple-500/10 text-purple-300">&gt; 20M logs/day</span>
+            </div>
+            <ul class="text-xs text-slate-400 space-y-1 list-disc list-inside">
+              <li>Memory: <strong>1024 MB</strong></li>
+              <li>MAX_BATCH_SIZE: <strong>1000</strong></li>
+              <li>MAX_CONCURRENT: <strong>20</strong></li>
+            </ul>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- Semantic Attributes Reference Section -->
+      <section id="semantic-attributes" class="space-y-6 pt-6 border-t border-dark-border">
+        <div class="space-y-2">
+          <div class="flex items-center space-x-2">
+            <i class="fa-solid fa-tags text-2xl text-indigo-300"></i>
+            <h2 class="text-2xl font-bold text-white">OpenTelemetry Semantic Attributes Mapping</h2>
+          </div>
+          <p class="text-sm text-slate-400">
+            Adherence to the official OpenTelemetry Semantic Conventions for Cloud, HTTP, Network, and TLS.
+          </p>
+        </div>
+
+        <div class="space-y-6">
+
+          <!-- Resource Attributes Table -->
+          <div class="space-y-2">
+            <h3 class="text-sm font-bold text-white flex items-center">
+              <i class="fa-solid fa-server mr-2 text-brand-400"></i>Resource Scope Attributes (Group-Level)
+            </h3>
+            <div class="overflow-x-auto rounded-xl border border-dark-border">
+              <table class="w-full text-left text-xs text-slate-300 font-mono">
+                <thead class="bg-dark-muted/40 text-slate-200 uppercase tracking-wider text-[11px]">
+                  <tr>
+                    <th class="px-4 py-3">OTel Attribute Key</th>
+                    <th class="px-4 py-3">Example Value</th>
+                    <th class="px-4 py-3 font-sans">Semantics & Origin</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-dark-border bg-dark-card">
+                  <tr>
+                    <td class="px-4 py-2.5 text-brand-400">cloud.provider</td>
+                    <td class="px-4 py-2.5 text-slate-400">"aws"</td>
+                    <td class="px-4 py-2.5 font-sans">Cloud service provider identifier.</td>
+                  </tr>
+                  <tr>
+                    <td class="px-4 py-2.5 text-brand-400">cloud.platform</td>
+                    <td class="px-4 py-2.5 text-slate-400">"aws_elastic_load_balancing", "aws_cloudfront"</td>
+                    <td class="px-4 py-2.5 font-sans">AWS managed platform type.</td>
+                  </tr>
+                  <tr>
+                    <td class="px-4 py-2.5 text-brand-400">cloud.region</td>
+                    <td class="px-4 py-2.5 text-slate-400">"us-east-1", "eu-west-1"</td>
+                    <td class="px-4 py-2.5 font-sans">AWS geographical region extracted from ARN or S3 key.</td>
+                  </tr>
+                  <tr>
+                    <td class="px-4 py-2.5 text-brand-400">cloud.account.id</td>
+                    <td class="px-4 py-2.5 text-slate-400">"123456789012"</td>
+                    <td class="px-4 py-2.5 font-sans">12-digit AWS Account ID owning the resource.</td>
+                  </tr>
+                  <tr>
+                    <td class="px-4 py-2.5 text-brand-400">aws.alb.target_group_arn</td>
+                    <td class="px-4 py-2.5 text-slate-400">"arn:aws:elasticloadbalancing:us-east-1:.../tg"</td>
+                    <td class="px-4 py-2.5 font-sans">Target group ARN servicing the traffic.</td>
+                  </tr>
+                  <tr>
+                    <td class="px-4 py-2.5 text-brand-400">aws.cloudfront.distribution_id</td>
+                    <td class="px-4 py-2.5 text-slate-400">"E2K55636F2K7"</td>
+                    <td class="px-4 py-2.5 font-sans">CloudFront distribution ID handling edge distribution.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Log Record Attributes Table -->
+          <div class="space-y-2">
+            <h3 class="text-sm font-bold text-white flex items-center">
+              <i class="fa-solid fa-list-check mr-2 text-telemetry-cyan"></i>Record-Level Attributes
+            </h3>
+            <div class="overflow-x-auto rounded-xl border border-dark-border">
+              <table class="w-full text-left text-xs text-slate-300 font-mono">
+                <thead class="bg-dark-muted/40 text-slate-200 uppercase tracking-wider text-[11px]">
+                  <tr>
+                    <th class="px-4 py-3">OTel Attribute Key</th>
+                    <th class="px-4 py-3">Type</th>
+                    <th class="px-4 py-3 font-sans">Description</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-dark-border bg-dark-card">
+                  <tr>
+                    <td class="px-4 py-2.5 text-sky-400">http.request.method</td>
+                    <td class="px-4 py-2.5 text-emerald-400">string</td>
+                    <td class="px-4 py-2.5 font-sans">HTTP request verb (e.g. GET, POST, PUT, DELETE, OPTIONS).</td>
+                  </tr>
+                  <tr>
+                    <td class="px-4 py-2.5 text-sky-400">http.response.status_code</td>
+                    <td class="px-4 py-2.5 text-amber-400">int</td>
+                    <td class="px-4 py-2.5 font-sans">Downstream HTTP response code (200, 404, 502, etc.).</td>
+                  </tr>
+                  <tr>
+                    <td class="px-4 py-2.5 text-sky-400">url.full / url.path / url.query</td>
+                    <td class="px-4 py-2.5 text-emerald-400">string</td>
+                    <td class="px-4 py-2.5 font-sans">Deconstructed URL components parsed automatically.</td>
+                  </tr>
+                  <tr>
+                    <td class="px-4 py-2.5 text-sky-400">client.address / client.port</td>
+                    <td class="px-4 py-2.5 text-emerald-400">string / int</td>
+                    <td class="px-4 py-2.5 font-sans">Client remote IPv4/IPv6 address and port.</td>
+                  </tr>
+                  <tr>
+                    <td class="px-4 py-2.5 text-sky-400">server.address / server.socket.address</td>
+                    <td class="px-4 py-2.5 text-emerald-400">string</td>
+                    <td class="px-4 py-2.5 font-sans">Host header domain and destination target IP.</td>
+                  </tr>
+                  <tr>
+                    <td class="px-4 py-2.5 text-sky-400">user_agent.original</td>
+                    <td class="px-4 py-2.5 text-emerald-400">string</td>
+                    <td class="px-4 py-2.5 font-sans">Client User-Agent header (automatically unescaped).</td>
+                  </tr>
+                  <tr>
+                    <td class="px-4 py-2.5 text-sky-400">tls.cipher_suite / tls.protocol.version</td>
+                    <td class="px-4 py-2.5 text-emerald-400">string</td>
+                    <td class="px-4 py-2.5 font-sans">Negotiated TLS cipher (e.g. ECDHE-RSA-AES128-GCM-SHA256) and version (TLSv1.3).</td>
+                  </tr>
+                  <tr>
+                    <td class="px-4 py-2.5 text-sky-400">traceId</td>
+                    <td class="px-4 py-2.5 text-purple-400">32 hex string</td>
+                    <td class="px-4 py-2.5 font-sans">Standard OTel trace identifier parsed from AWS X-Ray <code class="text-slate-200">Root=1-64abc...</code> header.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- Operations & Troubleshooting Section -->
+      <section id="operations" class="space-y-6 pt-6 border-t border-dark-border">
+        <div class="space-y-2">
+          <div class="flex items-center space-x-2">
+            <i class="fa-solid fa-chart-line text-2xl text-emerald-300"></i>
+            <h2 class="text-2xl font-bold text-white">Operations & Troubleshooting</h2>
+          </div>
+          <p class="text-sm text-slate-400">
+            Hardened operational patterns, CloudWatch alarms, and common remediation steps.
+          </p>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+          <!-- FAQ 1: SQS Partial Failures -->
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-2">
+            <div class="flex items-center space-x-2">
+              <i class="fa-solid fa-circle-question text-emerald-400"></i>
+              <h3 class="font-bold text-white text-sm">How does partial failure handling work?</h3>
+            </div>
+            <p class="text-xs text-slate-400 leading-relaxed">
+              When Lambda receives an SQS batch of 10 log file events, it processes each concurrently. If 9 succeed but 1 encounters an error (e.g. downstream network blip), the Lambda returns:
+            </p>
+            <pre class="p-2.5 rounded-lg bg-dark-bg border border-dark-border text-xs font-mono text-emerald-300"><code>{
+  "batchItemFailures": [
+    { "itemIdentifier": "failed-message-id" }
+  ]
+}</code></pre>
+            <p class="text-xs text-slate-400 leading-relaxed">
+              AWS SQS only retries the failed message. The 9 successful messages are deleted immediately, preventing duplicate logs from flooding your backend.
+            </p>
+          </div>
+
+          <!-- FAQ 2: S3 Access Denied -->
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-2">
+            <div class="flex items-center space-x-2">
+              <i class="fa-solid fa-triangle-exclamation text-amber-400"></i>
+              <h3 class="font-bold text-white text-sm">Error: "AccessDenied" when downloading S3 object</h3>
+            </div>
+            <p class="text-xs text-slate-400 leading-relaxed">
+              Verify that the Lambda execution role has <code class="text-slate-200">s3:GetObject</code> on the target log bucket. If the S3 bucket is encrypted using an AWS KMS Customer Managed Key (CMK), you must also grant the Lambda role <code class="text-slate-200">kms:Decrypt</code> permissions on the KMS key ARN.
+            </p>
+          </div>
+
+          <!-- FAQ 3: SQS Visibility Timeout -->
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-2">
+            <div class="flex items-center space-x-2">
+              <i class="fa-solid fa-clock-rotate-left text-sky-400"></i>
+              <h3 class="font-bold text-white text-sm">Why are logs being duplicated across executions?</h3>
+            </div>
+            <p class="text-xs text-slate-400 leading-relaxed">
+              Check your SQS Queue's <code class="text-slate-200">VisibilityTimeout</code>. It MUST be greater than or equal to <strong>6 times the Lambda function timeout</strong> (or at minimum Lambda Timeout + 60s). If VisibilityTimeout is shorter than the Lambda execution time, SQS delivers the message to another Lambda instance while the first is still processing.
+            </p>
+          </div>
+
+          <!-- FAQ 4: CloudWatch Alarms -->
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-2">
+            <div class="flex items-center space-x-2">
+              <i class="fa-solid fa-bell text-rose-400"></i>
+              <h3 class="font-bold text-white text-sm">Recommended CloudWatch Alarms</h3>
+            </div>
+            <ul class="text-xs text-slate-400 space-y-1.5 list-disc list-inside leading-relaxed">
+              <li><strong>SQS DLQ Depth</strong>: Trigger alert when <code class="text-slate-200">ApproximateNumberOfMessagesVisible &gt; 0</code> on the DLQ queue.</li>
+              <li><strong>Lambda Errors</strong>: Trigger alert when <code class="text-slate-200">Errors &gt; 0</code> for 2 consecutive evaluation periods.</li>
+              <li><strong>Queue Backlog</strong>: Trigger alert when queue message age exceeds 15 minutes (<code class="text-slate-200">ApproximateAgeOfOldestMessage &gt; 900</code>).</li>
+            </ul>
+          </div>
+
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- Footer -->
+  <footer class="border-t border-dark-border mt-20 bg-dark-card/60 py-10 text-xs text-slate-400 space-y-3">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
+      <div class="flex items-center space-x-3">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-tr from-telemetry-orange to-brand-500 flex items-center justify-center text-white text-xs">
+          <i class="fa-solid fa-satellite-dish"></i>
+        </div>
+        <div>
+          <span class="font-bold text-slate-200">AWS Log to OTel Processor</span>
+          <p class="text-[11px] text-slate-500">Built by <a href="https://github.com/divmora" target="_blank" class="hover:text-white transition">DIVMORA Technologies</a></p>
+        </div>
+      </div>
+
+      <div class="flex items-center space-x-6">
+        <a href="https://github.com/divmora/otel-aws-log-processor" target="_blank" class="hover:text-white transition flex items-center space-x-1.5">
+          <i class="fa-brands fa-github"></i>
+          <span>GitHub</span>
+        </a>
+        <a href="https://deepwiki.com/divmora/otel-aws-log-processor" target="_blank" class="hover:text-white transition flex items-center space-x-1.5">
+          <i class="fa-solid fa-book-open"></i>
+          <span>DeepWiki</span>
+        </a>
+        <a href="https://github.com/divmora/otel-aws-log-processor/blob/main/LICENSE" target="_blank" class="hover:text-white transition">
+          License (BSL 1.1)
+        </a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Scripts: Tabs, Search, Mermaid & Copy Functionality -->
+  <script>
+    // Initialize Mermaid diagrams
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'dark',
+      themeVariables: {
+        darkMode: true,
+        background: '#111827',
+        primaryColor: '#4f46e5',
+        primaryTextColor: '#f8fafc',
+        primaryBorderColor: '#6366f1',
+        lineColor: '#818cf8',
+        secondaryColor: '#0b0f19',
+        tertiaryColor: '#1f2937'
+      }
+    });
+
+    // Copy to Clipboard with Toast Notification
+    function copyCode(elementId) {
+      const el = document.getElementById(elementId);
+      if (!el) return;
+      const text = el.innerText;
+      navigator.clipboard.writeText(text).then(() => {
+        showToast('Code copied to clipboard!');
+      }).catch(() => {
+        showToast('Failed to copy to clipboard');
+      });
+    }
+
+    function showToast(message) {
+      const toast = document.getElementById('toast');
+      const toastMsg = document.getElementById('toast-message');
+      toastMsg.innerText = message;
+      toast.classList.remove('opacity-0', 'translate-y-10', 'pointer-events-none');
+      toast.classList.add('opacity-100', 'translate-y-0');
+
+      setTimeout(() => {
+        toast.classList.remove('opacity-100', 'translate-y-0');
+        toast.classList.add('opacity-0', 'translate-y-10', 'pointer-events-none');
+      }, 2500);
+    }
+
+    // Log Types Tab Switcher
+    function switchLogTab(tabKey) {
+      const tabs = ['alb', 'nlb', 'cloudfront', 'waf'];
+      tabs.forEach(key => {
+        const btn = document.getElementById(`tab-btn-${key}`);
+        const content = document.getElementById(`tab-content-${key}`);
+        if (key === tabKey) {
+          btn.classList.add('active', 'bg-brand-600', 'text-white');
+          btn.classList.remove('text-slate-400');
+          content.classList.remove('hidden');
+        } else {
+          btn.classList.remove('active', 'bg-brand-600', 'text-white');
+          btn.classList.add('text-slate-400');
+          content.classList.add('hidden');
+        }
+      });
+    }
+
+    // IaC Tab Switcher
+    function switchIacTab(tabKey) {
+      const tabs = ['terraform', 'cloudformation', 'cli', 'docker'];
+      tabs.forEach(key => {
+        const btn = document.getElementById(`tab-btn-${key}`);
+        const content = document.getElementById(`tab-content-${key}`);
+        if (key === tabKey) {
+          btn.classList.add('active');
+          btn.classList.remove('text-slate-400');
+          content.classList.remove('hidden');
+        } else {
+          btn.classList.remove('active');
+          btn.classList.add('text-slate-400');
+          content.classList.add('hidden');
+        }
+      });
+    }
+
+    // Mobile Drawer Handlers
+    const mobileBtn = document.getElementById('mobile-menu-btn');
+    const closeBtn = document.getElementById('close-drawer-btn');
+    const drawer = document.getElementById('mobile-drawer');
+    const sidebarNav = document.getElementById('sidebar');
+    const mobileLinksContainer = document.getElementById('mobile-links-container');
+
+    if (sidebarNav && mobileLinksContainer) {
+      mobileLinksContainer.innerHTML = sidebarNav.innerHTML;
+      // Close drawer on link click
+      mobileLinksContainer.querySelectorAll('a').forEach(a => {
+        a.addEventListener('click', () => {
+          drawer.classList.add('hidden');
+        });
+      });
+    }
+
+    if (mobileBtn && drawer) {
+      mobileBtn.addEventListener('click', () => {
+        drawer.classList.remove('hidden');
+      });
+    }
+    if (closeBtn && drawer) {
+      closeBtn.addEventListener('click', () => {
+        drawer.classList.add('hidden');
+      });
+    }
+
+    // Quick Search Filter in Documentation
+    const searchInput = document.getElementById('quick-search');
+    if (searchInput) {
+      searchInput.addEventListener('input', (e) => {
+        const term = e.target.value.toLowerCase().trim();
+        const sections = document.querySelectorAll('main > section');
+        sections.forEach(sec => {
+          if (!term) {
+            sec.style.display = '';
+            return;
+          }
+          const text = sec.innerText.toLowerCase();
+          if (text.includes(term)) {
+            sec.style.display = '';
+          } else {
+            sec.style.display = 'none';
+          }
+        });
+      });
+    }
+
+    // Active link highlighting on scroll (Scrollspy)
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          const id = entry.target.getAttribute('id');
+          document.querySelectorAll('.nav-link').forEach(link => {
+            if (link.getAttribute('href') === `#${id}`) {
+              link.classList.add('bg-dark-card', 'text-brand-400', 'font-semibold');
+              link.classList.remove('text-slate-300');
+            } else {
+              link.classList.remove('bg-dark-card', 'text-brand-400', 'font-semibold');
+              link.classList.add('text-slate-300');
+            }
+          });
+        }
+      });
+    }, { rootMargin: '-20% 0px -70% 0px' });
+
+    document.querySelectorAll('main > section[id]').forEach(sec => {
+      observer.observe(sec);
+    });
+  </script>
+</body>
+</html>
