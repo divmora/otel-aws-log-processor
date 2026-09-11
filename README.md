@@ -3,14 +3,14 @@
 [![Latest Release](https://img.shields.io/github/v/release/divmora/otel-aws-log-processor?logo=github)](https://github.com/divmora/otel-aws-log-processor/releases)
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-blue.svg)](https://github.com/divmora/.github/blob/main/LICENSING.md)
 [![CI/CD](https://github.com/divmora/otel-aws-log-processor/actions/workflows/ci.yml/badge.svg)](https://github.com/divmora/otel-aws-log-processor/actions)
-[![Security Policy](https://img.shields.io/badge/Security-Policy-green.svg)](SECURITY.md)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/divmora/otel-aws-log-processor)](go.mod)
 [![Documentation: GitHub Pages](https://img.shields.io/badge/docs-GitHub_Pages-22c55e.svg)](https://divmora.github.io/otel-aws-log-processor/)
-[![Documentation: DeepWiki](https://img.shields.io/badge/docs-DeepWiki-blue.svg)](https://deepwiki.com/divmora/otel-aws-log-processor)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/divmora/otel-aws-log-processor)
+[![Security Policy](https://img.shields.io/badge/Security-Policy-green.svg)](SECURITY.md)
 
 A high-performance Go-based AWS Lambda application that parses and converts AWS access logs into OpenTelemetry (OTLP) log records, exporting them via HTTP to any OTLP-compatible backend (e.g., SigNoz, OpenTelemetry Collector, Coralogix, Datadog).
 
-📖 **Comprehensive Documentation & Setup Guides**: [https://divmora.github.io/otel-aws-log-processor/](https://divmora.github.io/otel-aws-log-processor/)
+[Documentation](https://divmora.github.io/otel-aws-log-processor/) • [Roadmap](ROADMAP.md) • [Ask DeepWiki](https://deepwiki.com/divmora/otel-aws-log-processor)
 
 ---
 

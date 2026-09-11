@@ -38,6 +38,7 @@ otel-aws-log-processor/
 ├── .release-please-manifest.json # Release Please version manifest
 ├── Dockerfile                    # Multi-stage container build for Lambda provided.al2023
 ├── Makefile                      # Common build, test, and package targets
+├── ROADMAP.md                    # Living product roadmap (future capabilities & technical debt)
 ├── CONTRIBUTING.md               # Contribution workflow and guidelines
 ├── SECURITY.md                   # Security vulnerability reporting policy
 └── LICENSE                       # Divmora Business Source License 1.1 (BSL 1.1)
@@ -112,4 +113,5 @@ The Lambda handler is configured via environment variables:
 
 - **Conventional Commits**: This repository enforces semantic PR titles (`feat: ...`, `fix: ...`, `chore: ...`, `docs: ...`) via `.github/workflows/semantic-pull-request.yml`.
 - **Automated Releases**: Releases and changelog generation are automated via Google's `release-please` action (`.github/workflows/release-please.yml`) and GoReleaser.
+- **Living Product Roadmap Management**: `ROADMAP.md` is the central living document tracking future capabilities, optimizations, and technical debt. Add new items as identified; prune items immediately upon implementation and verification.
 - **Tests Required**: Any new parser, processor, or utility must be accompanied by unit tests in the corresponding `*_test.go` file.
