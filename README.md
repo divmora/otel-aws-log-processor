@@ -71,6 +71,9 @@ The Lambda handler is configured entirely via environment variables:
 | `MAX_BATCH_SIZE` | Max log records per OTLP HTTP batch request | `500` |
 | `MAX_RETRIES` | Number of retry attempts on failed HTTP requests | `3` |
 | `MAX_CONCURRENT` | Concurrency limit for file processing & HTTP sending | `10` |
+| `ENVIRONMENT` | Environment name (`development`, `staging`, `production`, etc.) | `production` |
+| `DIVMORA_LICENSE_KEY` | Commercial Ed25519 license token (required for production) | `""` |
+| `DIVMORA_LICENSE_MODE` | Production enforcement mode (`warn` non-blocking or `strict`) | `warn` |
 
 ---
 
@@ -205,8 +208,42 @@ We welcome contributions from the community! Please review our community documen
 
 This project is licensed under the **Business Source License 1.1 (BSL 1.1)** - see the [LICENSE](LICENSE) file for details.
 
-- **Non-Production Use**: Free of charge for local development, staging, QA, testing, CI/CD validation, and evaluation.
-- **Change Date**: Converts automatically to the permissive **Apache License, Version 2.0** three (3) years after release.
-- **Production & Commercial Deployments**: Production use requires a commercial license (EULA) from DIVMORA Technologies.
+- **Non-Production Use**: 100% free of charge for local development, staging, QA, testing, CI/CD automated validation, and proof-of-concept evaluation. Simply set `ENVIRONMENT=development` or `staging`.
+- **Change Date Conversion**: Automatically converts to the permissive **Apache License, Version 2.0** exactly three (3) years after each release.
+- **Production Deployments**: Production use requires a valid commercial license (EULA) from DIVMORA Technologies.
 
-For enterprise licensing and commercial inquiries, please contact **[licensing@divmora.com](mailto:licensing@divmora.com)** or visit **[divmora.com](https://divmora.com)**.
+### Supplying a Commercial License
+
+Set your cryptographic license token via environment variable in your Lambda deployment or Terraform module:
+
+```bash
+export DIVMORA_LICENSE_KEY="<base64-ed25519-signed-token>"
+```
+
+### Production Enforcement Modes
+
+| Mode | Behavior |
+| :--- | :--- |
+| `DIVMORA_LICENSE_MODE=warn` *(Default)* | Emits structured warnings and stamps `divmora.license.status=unlicensed_production_alert` in OTel telemetry and CloudWatch EMF without dropping logs or disrupting production pipelines. |
+| `DIVMORA_LICENSE_MODE=strict` | Strictly enforces licensing compliance, rejecting invocations if unverified or expired past the 14-day grace period. |
+
+### Minting Commercial Licenses (Admins)
+
+DIVMORA administrators use the included `license-gen` utility to issue and inspect signed tokens:
+
+```bash
+# Build the generator CLI
+make build-license-gen
+
+# Mint a 1-year enterprise license for specific AWS accounts
+./bin/license-gen generate \
+  --customer="Customer Name" \
+  --accounts="123456789012,987654321098" \
+  --tier="enterprise" \
+  --private-key="<ed25519-private-key>"
+
+# Inspect an existing license token
+./bin/license-gen inspect --token="<token>"
+```
+
+For enterprise licensing, custom SLAs, and commercial inquiries, please contact **[licensing@divmora.com](mailto:licensing@divmora.com)** or visit **[divmora.com](https://divmora.com)**.

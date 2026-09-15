@@ -27,7 +27,34 @@ builds:
       - arm64
     ldflags:
       - -s -w
-      - -X main.Version={{ .Version }}
+      - -X github.com/divmora/otel-aws-log-processor/pkg/version.Version={{ .Version }}
+      - -X github.com/divmora/otel-aws-log-processor/pkg/version.GitCommit={{ .FullCommit }}
+      - -X github.com/divmora/otel-aws-log-processor/pkg/version.BuildDate={{ .Date }}
+      - -X github.com/divmora/otel-aws-log-processor/pkg/sender.Version={{ .Version }}
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+  # ============================================================================
+  # DIVMORA License Generator CLI Binary
+  # ============================================================================
+  - id: license-gen
+    main: ./cmd/license-gen
+    binary: license-gen
+    flags:
+      - -trimpath
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/divmora/otel-aws-log-processor/pkg/version.Version={{ .Version }}
+      - -X github.com/divmora/otel-aws-log-processor/pkg/version.GitCommit={{ .FullCommit }}
+      - -X github.com/divmora/otel-aws-log-processor/pkg/version.BuildDate={{ .Date }}
     mod_timestamp: '{{ .CommitTimestamp }}'
 
   # ============================================================================
@@ -47,7 +74,10 @@ builds:
       - arm64
     ldflags:
       - -s -w
-      - -X main.Version={{ .Version }}
+      - -X github.com/divmora/otel-aws-log-processor/pkg/version.Version={{ .Version }}
+      - -X github.com/divmora/otel-aws-log-processor/pkg/version.GitCommit={{ .FullCommit }}
+      - -X github.com/divmora/otel-aws-log-processor/pkg/version.BuildDate={{ .Date }}
+      - -X github.com/divmora/otel-aws-log-processor/pkg/sender.Version={{ .Version }}
     mod_timestamp: '{{ .CommitTimestamp }}'
 
 archives:
@@ -55,6 +85,7 @@ archives:
   - id: cli-archive
     ids:
       - otel-aws-log-processor
+      - license-gen
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats:
       - tar.gz
@@ -67,6 +98,7 @@ archives:
       - LICENSE
       - CONTRIBUTING.md
       - SECURITY.md
+      - release.sig*
 
   # AWS Lambda deployment zip (bootstrap executable placed directly at archive root)
   - id: lambda-archive
@@ -76,7 +108,7 @@ archives:
     formats:
       - zip
     files:
-      - none*
+      - release.sig*
 
 checksum:
   name_template: 'checksums.txt'
@@ -127,3 +159,5 @@ release:
   draft: false
   prerelease: auto
   mode: replace
+  extra_files:
+    - glob: ./release.sig*

@@ -10,11 +10,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/divmora/otel-aws-log-processor/pkg/license"
 	"github.com/divmora/otel-aws-log-processor/pkg/model"
 	"github.com/divmora/otel-aws-log-processor/pkg/processor"
+	"github.com/divmora/otel-aws-log-processor/pkg/version"
 )
 
-var Version = "dev"
+var Version = version.Get().Version
 
 // OTLPClient handles sending logs to an OTLP endpoint.
 type OTLPClient struct {
@@ -26,6 +28,9 @@ type OTLPClient struct {
 	MaxConcurrent int
 	RetryBaseSec  float64
 	Logger        *slog.Logger
+	LicenseStatus *license.ValidationStatus
+	Environment   string
+	CallerAccount string
 }
 
 type resourceGroup struct {
@@ -47,6 +52,13 @@ func NewOTLPClient(endpoint, user, pass string, maxRetries, maxBatchSize, maxCon
 	}
 }
 
+// SetLicenseContext configures licensing metadata to be attached to OTLP resource attributes.
+func (c *OTLPClient) SetLicenseContext(status *license.ValidationStatus, env, callerAccount string) {
+	c.LicenseStatus = status
+	c.Environment = env
+	c.CallerAccount = callerAccount
+}
+
 // SendLogs converts adapters to OTLP log records and sends them in batches.
 func (c *OTLPClient) SendLogs(entries []processor.LogAdapter) error {
 	// Group by resource
@@ -56,8 +68,12 @@ func (c *OTLPClient) SendLogs(entries []processor.LogAdapter) error {
 		resKey := entry.GetResourceKey()
 
 		if _, exists := grouped[resKey]; !exists {
+			attrs := entry.GetResourceAttributes()
+			if c.LicenseStatus != nil {
+				attrs = license.AppendLicenseAttributes(attrs, c.LicenseStatus, c.Environment, c.CallerAccount)
+			}
 			grouped[resKey] = &resourceGroup{
-				ResourceAttrs: entry.GetResourceAttributes(),
+				ResourceAttrs: attrs,
 				LogRecords:    []model.OTelLogRecord{},
 			}
 		}

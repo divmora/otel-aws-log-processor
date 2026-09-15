@@ -1,0 +1,225 @@
+package version_test
+
+import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/divmora/otel-aws-log-processor/pkg/version"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func generateTestReleaseKeyPair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	return pub, priv
+}
+
+func TestSignAndVerifyReleaseToken_Success(t *testing.T) {
+	pub, priv := generateTestReleaseKeyPair(t)
+
+	claims := &version.ReleaseClaims{
+		Version:     "0.2.0",
+		GitCommit:   "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+		BuildDate:   "2026-09-12T12:00:00Z",
+		Authority:   "DIVMORA Technologies Release Authority",
+		AuthorityID: "divmora-prod-release-1",
+	}
+
+	token, err := version.SignRelease(claims, priv)
+	require.NoError(t, err)
+	assert.NotEmpty(t, token)
+	assert.Contains(t, token, ".")
+
+	parsedClaims, err := version.ParseAndVerifyReleaseToken(token, pub)
+	require.NoError(t, err)
+	require.NotNil(t, parsedClaims)
+	assert.Equal(t, "0.2.0", parsedClaims.Version)
+	assert.Equal(t, "4b825dc642cb6eb9a060e54bf8d69288fbee4904", parsedClaims.GitCommit)
+	assert.Equal(t, "2026-09-12T12:00:00Z", parsedClaims.BuildDate)
+	assert.Equal(t, "DIVMORA Technologies Release Authority", parsedClaims.Authority)
+}
+
+func TestEvaluateProvenance_VerifiedOfficial(t *testing.T) {
+	pub, priv := generateTestReleaseKeyPair(t)
+	version.SetReleaseVerificationPublicKey(pub)
+	defer version.ResetReleaseVerificationPublicKey()
+
+	origVer := version.Version
+	origCommit := version.GitCommit
+	origDate := version.BuildDate
+	origSig := version.ReleaseSignature
+	defer func() {
+		version.Version = origVer
+		version.GitCommit = origCommit
+		version.BuildDate = origDate
+		version.ReleaseSignature = origSig
+	}()
+
+	version.Version = "0.2.0"
+	version.GitCommit = "abcdef123456"
+	version.BuildDate = "2026-09-12T12:00:00Z"
+
+	claims := &version.ReleaseClaims{
+		Version:   "0.2.0",
+		GitCommit: "abcdef123456",
+		BuildDate: "2026-09-12T12:00:00Z",
+		Authority: "DIVMORA Technologies",
+	}
+	token, err := version.SignRelease(claims, priv)
+	require.NoError(t, err)
+	version.ReleaseSignature = token
+
+	info := version.Get()
+	require.True(t, info.Provenance.Verified)
+	assert.Equal(t, version.ProvenanceVerifiedOfficial, info.Provenance.Status)
+	assert.Equal(t, "DIVMORA Technologies", info.Provenance.Authority)
+	assert.Empty(t, info.Provenance.Error)
+
+	// Verified release converts to Apache 2.0 when Change Date passes
+	changeDate, ok := info.ChangeDate()
+	require.True(t, ok)
+	assert.False(t, info.IsApacheConverted(changeDate.AddDate(0, 0, -1)))
+	assert.True(t, info.IsApacheConverted(changeDate.AddDate(0, 0, 1)))
+	assert.Equal(t, "Apache-2.0", info.License(changeDate.AddDate(0, 0, 1)))
+}
+
+func TestEvaluateProvenance_UnattestedCustomBuild(t *testing.T) {
+	origVer := version.Version
+	origCommit := version.GitCommit
+	origDate := version.BuildDate
+	origSig := version.ReleaseSignature
+	defer func() {
+		version.Version = origVer
+		version.GitCommit = origCommit
+		version.BuildDate = origDate
+		version.ReleaseSignature = origSig
+	}()
+
+	version.Version = "0.2.0"
+	version.GitCommit = "custom-commit"
+	version.BuildDate = "2026-09-12T12:00:00Z"
+	version.ReleaseSignature = "none"
+
+	info := version.Get()
+	assert.False(t, info.Provenance.Verified)
+	assert.Equal(t, version.ProvenanceUnattestedCustom, info.Provenance.Status)
+
+	// Unattested build NEVER converts to Apache 2.0 even if 4 years elapse
+	fourYearsLater := time.Now().UTC().AddDate(4, 0, 0)
+	assert.False(t, info.IsApacheConverted(fourYearsLater))
+	assert.Equal(t, "BSL-1.1", info.License(fourYearsLater))
+}
+
+func TestEvaluateProvenance_TamperedMetadata(t *testing.T) {
+	pub, priv := generateTestReleaseKeyPair(t)
+	version.SetReleaseVerificationPublicKey(pub)
+	defer version.ResetReleaseVerificationPublicKey()
+
+	origVer := version.Version
+	origCommit := version.GitCommit
+	origDate := version.BuildDate
+	origSig := version.ReleaseSignature
+	defer func() {
+		version.Version = origVer
+		version.GitCommit = origCommit
+		version.BuildDate = origDate
+		version.ReleaseSignature = origSig
+	}()
+
+	claims := &version.ReleaseClaims{
+		Version:   "0.2.0",
+		GitCommit: "aaa111",
+		BuildDate: "2026-09-12T12:00:00Z",
+		Authority: "DIVMORA Technologies",
+	}
+	token, err := version.SignRelease(claims, priv)
+	require.NoError(t, err)
+	version.ReleaseSignature = token
+
+	// Tamper 1: Version mismatch
+	version.Version = "0.3.0"
+	version.GitCommit = "aaa111"
+	version.BuildDate = "2026-09-12T12:00:00Z"
+	info := version.Get()
+	assert.False(t, info.Provenance.Verified)
+	assert.Equal(t, version.ProvenanceTamperedMetadata, info.Provenance.Status)
+	assert.Contains(t, info.Provenance.Error, "Version mismatch")
+
+	// Tamper 2: Commit mismatch
+	version.Version = "0.2.0"
+	version.GitCommit = "bbb222"
+	info = version.Get()
+	assert.False(t, info.Provenance.Verified)
+	assert.Equal(t, version.ProvenanceTamperedMetadata, info.Provenance.Status)
+	assert.Contains(t, info.Provenance.Error, "Commit mismatch")
+
+	// Tamper 3: Date mismatch
+	version.GitCommit = "aaa111"
+	version.BuildDate = "2026-09-13T12:00:00Z"
+	info = version.Get()
+	assert.False(t, info.Provenance.Verified)
+	assert.Equal(t, version.ProvenanceTamperedMetadata, info.Provenance.Status)
+	assert.Contains(t, info.Provenance.Error, "Build date mismatch")
+}
+
+func TestEvaluateProvenance_TamperedSignature(t *testing.T) {
+	pubWrong, _ := generateTestReleaseKeyPair(t)
+	_, privSigner := generateTestReleaseKeyPair(t)
+
+	version.SetReleaseVerificationPublicKey(pubWrong)
+	defer version.ResetReleaseVerificationPublicKey()
+
+	origSig := version.ReleaseSignature
+	defer func() { version.ReleaseSignature = origSig }()
+
+	claims := &version.ReleaseClaims{
+		Version:   "0.2.0",
+		GitCommit: "aaa111",
+		BuildDate: "2026-09-12T12:00:00Z",
+	}
+	token, err := version.SignRelease(claims, privSigner)
+	require.NoError(t, err)
+	version.ReleaseSignature = token
+
+	info := version.Get()
+	assert.False(t, info.Provenance.Verified)
+	assert.Equal(t, version.ProvenanceTamperedSignature, info.Provenance.Status)
+}
+
+func TestResolveReleaseSignature_SidecarFile(t *testing.T) {
+	pub, priv := generateTestReleaseKeyPair(t)
+	version.SetReleaseVerificationPublicKey(pub)
+	defer version.ResetReleaseVerificationPublicKey()
+
+	origSig := version.ReleaseSignature
+	version.ReleaseSignature = "none"
+	defer func() { version.ReleaseSignature = origSig }()
+
+	claims := &version.ReleaseClaims{
+		Version:   "0.2.0",
+		GitCommit: "aaa111",
+		BuildDate: "2026-09-12T12:00:00Z",
+	}
+	token, err := version.SignRelease(claims, priv)
+	require.NoError(t, err)
+
+	tempDir := t.TempDir()
+	origWd, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(tempDir))
+	defer func() { _ = os.Chdir(origWd) }()
+
+	// Write release.sig in working directory
+	sigFile := filepath.Join(tempDir, "release.sig")
+	require.NoError(t, os.WriteFile(sigFile, []byte(token), 0644))
+
+	resolved, source := version.ResolveReleaseSignature()
+	assert.Equal(t, token, resolved)
+	assert.Contains(t, source, "sidecar file")
+}

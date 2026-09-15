@@ -215,6 +215,9 @@
             <a href="#operations" class="nav-link flex items-center px-3 py-2 rounded-lg hover:bg-dark-card hover:text-white transition">
               <i class="fa-solid fa-chart-line w-5 text-emerald-300"></i>Operations & Troubleshooting
             </a>
+            <a href="#licensing" class="nav-link flex items-center px-3 py-2 rounded-lg hover:bg-dark-card hover:text-white transition">
+              <i class="fa-solid fa-file-contract w-5 text-amber-400"></i>Licensing & Commercial
+            </a>
           </nav>
         </div>
 
@@ -1321,6 +1324,24 @@ otlp_config:
                 <td class="px-4 py-3 text-amber-400">integer</td>
                 <td class="px-4 py-3 text-slate-300 font-sans">Worker goroutine pool size for parallel S3 log file reading & HTTP batch sending.</td>
               </tr>
+              <tr>
+                <td class="px-4 py-3 text-brand-400 font-semibold">ENVIRONMENT</td>
+                <td class="px-4 py-3 text-slate-400">production</td>
+                <td class="px-4 py-3 text-emerald-400">string</td>
+                <td class="px-4 py-3 text-slate-300 font-sans">Deployment environment tier (<code class="text-emerald-300 font-mono">development</code>, <code class="text-emerald-300 font-mono">staging</code>, <code class="text-emerald-300 font-mono">production</code>, etc.). Non-production tiers are free under BSL 1.1.</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 text-brand-400 font-semibold">DIVMORA_LICENSE_KEY</td>
+                <td class="px-4 py-3 text-slate-500">""</td>
+                <td class="px-4 py-3 text-emerald-400">string (JWT/Base64)</td>
+                <td class="px-4 py-3 text-slate-300 font-sans">Cryptographically signed Ed25519 commercial license token required for production deployments.</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 text-brand-400 font-semibold">DIVMORA_LICENSE_MODE</td>
+                <td class="px-4 py-3 text-slate-400">warn</td>
+                <td class="px-4 py-3 text-emerald-400">string</td>
+                <td class="px-4 py-3 text-slate-300 font-sans">Licensing enforcement mode in production: <code class="text-amber-300 font-mono">warn</code> (non-blocking diagnostics with telemetry markers) or <code class="text-rose-300 font-mono">strict</code> (blocks execution if unverified).</td>
+              </tr>
             </tbody>
           </table>
         </div>
@@ -1561,6 +1582,75 @@ otlp_config:
             </ul>
           </div>
 
+        </div>
+      </section>
+
+      <!-- Licensing & Commercial Use Section -->
+      <section id="licensing" class="space-y-6 pt-6 border-t border-dark-border">
+        <div class="space-y-2">
+          <div class="flex items-center space-x-2">
+            <i class="fa-solid fa-file-contract text-2xl text-amber-400"></i>
+            <h2 class="text-2xl font-bold text-white">Licensing & Commercial Use</h2>
+          </div>
+          <p class="text-sm text-slate-400">
+            Learn about DIVMORA's two-tier licensing model under the Business Source License 1.1 (BSL 1.1).
+          </p>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <!-- Non-Production Grant Card -->
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-xs font-semibold">100% Free of Charge</span>
+              <i class="fa-solid fa-laptop-code text-emerald-400 text-lg"></i>
+            </div>
+            <h3 class="text-base font-bold text-white">Non-Production Environments</h3>
+            <p class="text-xs text-slate-300 leading-relaxed">
+              Permitted free of charge under the BSL 1.1 Additional Use Grant for local development, staging, QA, testing, CI/CD automated validation, and proof-of-concept evaluation. Simply set <code class="text-emerald-300 font-mono">ENVIRONMENT=staging</code> or <code class="text-emerald-300 font-mono">development</code>.
+            </p>
+            <div class="p-3 rounded-xl bg-dark-bg border border-dark-border text-xs text-slate-400 space-y-1">
+              <div class="text-slate-200 font-semibold font-mono">Fair-Use Guardrails:</div>
+              <div>Single Batch Density: &le; 10,000 records</div>
+              <div>Container Lifecycle: &le; 25,000 records</div>
+            </div>
+          </div>
+
+          <!-- Production Commercial License Card -->
+          <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="px-2.5 py-1 rounded-full bg-brand-500/10 text-brand-400 border border-brand-500/20 text-xs font-semibold">Commercial EULA Required</span>
+              <i class="fa-solid fa-building-shield text-brand-400 text-lg"></i>
+            </div>
+            <h3 class="text-base font-bold text-white">Production Deployments</h3>
+            <p class="text-xs text-slate-300 leading-relaxed">
+              Operating in production AWS accounts requires a commercial license key (EULA) issued by DIVMORA Technologies. License tokens are cryptographically signed with Ed25519 and verified offline inside the Lambda runtime with sub-microsecond latency and zero external network calls.
+            </p>
+            <div class="p-3 rounded-xl bg-dark-bg border border-dark-border text-xs text-slate-400 space-y-1">
+              <div class="text-slate-200 font-semibold font-mono">Change Date Conversion:</div>
+              <div>Converts automatically to <span class="text-brand-300 font-semibold">Apache License 2.0</span> exactly 3 years from release.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Configuration & Token Provisioning -->
+        <div class="p-5 rounded-2xl bg-dark-card border border-dark-border space-y-3">
+          <h3 class="text-base font-bold text-white flex items-center space-x-2">
+            <i class="fa-solid fa-key text-amber-400"></i>
+            <span>Configuring Your License Token</span>
+          </h3>
+          <p class="text-xs text-slate-400">
+            Provide your cryptographic license token via the <code class="text-slate-200 font-mono">DIVMORA_LICENSE_KEY</code> environment variable in your Lambda function configuration or Terraform module:
+          </p>
+          <pre class="p-3 rounded-xl bg-dark-bg border border-dark-border text-xs font-mono text-amber-300 overflow-x-auto"><code>aws lambda update-function-configuration \
+  --function-name otel-aws-log-processor \
+  --environment "Variables={
+    OTLP_HTTP_LOGS_ENDPOINT=https://ingest.your-collector.com/v1/logs,
+    DIVMORA_LICENSE_KEY=eyJjdXN0b21lciI6eyJuYW1lIjoiQWNtZSBDb3JwIn0...
+  }"</code></pre>
+          <div class="flex items-center justify-between pt-2 text-xs text-slate-400">
+            <span>Commercial inquiries and enterprise licensing: <a href="mailto:licensing@divmora.com" class="text-brand-400 hover:underline">licensing@divmora.com</a></span>
+            <a href="https://divmora.com" target="_blank" class="text-slate-300 hover:text-white font-medium">divmora.com &rarr;</a>
+          </div>
         </div>
       </section>
 

@@ -14,7 +14,7 @@ COPY . .
 # Use TARGETARCH to support multi-arch builds (amd64/arm64)
 ARG TARGETARCH
 ARG VERSION
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -ldflags="-w -s -X github.com/divmora/otel-aws-log-processor/pkg/sender.Version=${VERSION}" -o bootstrap ./cmd/lambda
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -ldflags="-w -s -X github.com/divmora/otel-aws-log-processor/pkg/version.Version=${VERSION} -X github.com/divmora/otel-aws-log-processor/pkg/sender.Version=${VERSION}" -o bootstrap ./cmd/lambda
 
 # Final stage - use AWS Lambda base image
 FROM public.ecr.aws/lambda/provided:al2023

@@ -12,10 +12,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	eventsPkg "github.com/divmora/otel-aws-log-processor/pkg/events"
+	"github.com/divmora/otel-aws-log-processor/pkg/license"
 	"github.com/divmora/otel-aws-log-processor/pkg/parser"
 	"github.com/divmora/otel-aws-log-processor/pkg/processor"
 	"github.com/divmora/otel-aws-log-processor/pkg/sender"
 	"github.com/divmora/otel-aws-log-processor/pkg/utils"
+	"strconv"
+	"time"
 )
 
 var (
@@ -24,6 +27,7 @@ var (
 	maxConcurrent int
 	registry      *processor.Registry
 	otlpClient    *sender.OTLPClient
+	quotaTracker  *license.QuotaTracker
 )
 
 func init() {
@@ -71,6 +75,18 @@ func init() {
 		MaxConcurrent: maxConcurrent,
 		Parser:        &parser.WAFParser{},
 	})
+
+	// Initialize Non-Production Quota Tracker
+	quotaTracker = license.NewQuotaTracker()
+
+	// Initial license compliance check
+	env := license.DetectEnvironment()
+	initStatus, _ := license.Enforce(license.EnforcementOptions{
+		Environment: env,
+	})
+	if initStatus != nil {
+		logger.Info("License engine initialized", "status", initStatus.StatusReason, "environment", env, "message", initStatus.Message)
+	}
 }
 
 func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResponse, error) {
@@ -79,6 +95,8 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 	}
 
 	var allEntries []processor.LogAdapter
+	var lastBucket string
+	var authTime time.Time
 
 	logger.Info("Lambda triggered", "sqs_record_count", len(sqsEvent.Records))
 
@@ -87,6 +105,12 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 	sem := make(chan struct{}, maxConcurrent)
 
 	for _, record := range sqsEvent.Records {
+		if sentTs, ok := record.Attributes["SentTimestamp"]; ok && sentTs != "" {
+			if ms, err := strconv.ParseInt(sentTs, 10, 64); err == nil && authTime.IsZero() {
+				authTime = time.UnixMilli(ms).UTC()
+			}
+		}
+
 		wg.Add(1)
 		go func(record events.SQSMessage) {
 			defer wg.Done()
@@ -115,6 +139,10 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 					logger.Warn("Skipping record with empty bucket or key", "message_id", record.MessageId)
 					continue
 				}
+
+				mu.Lock()
+				lastBucket = bucket
+				mu.Unlock()
 
 				log := logger.With("bucket", bucket, "key", key, "message_id", record.MessageId)
 				log.Info("Processing S3 object")
@@ -154,6 +182,42 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 
 	wg.Wait()
 
+	// Extract source account IDs from parsed log records
+	sourceAccountMap := make(map[string]struct{})
+	for _, entry := range allEntries {
+		for _, attr := range entry.GetResourceAttributes() {
+			if attr.Key == "cloud.account.id" && attr.Value.StringValue != nil {
+				sourceAccountMap[*attr.Value.StringValue] = struct{}{}
+			}
+		}
+	}
+	var sourceAccounts []string
+	for acc := range sourceAccountMap {
+		sourceAccounts = append(sourceAccounts, acc)
+	}
+
+	callerAccount := license.ExtractCallerAccountID(ctx)
+	env := license.DetectEnvironment()
+
+	// Evaluate license compliance
+	licStatus, err := license.Enforce(license.EnforcementOptions{
+		Context:           ctx,
+		Environment:       env,
+		CallerAccountID:   callerAccount,
+		SourceAccountIDs:  sourceAccounts,
+		BatchRecordCount:  len(allEntries),
+		QuotaTracker:      quotaTracker,
+		BucketName:        lastBucket,
+		AuthoritativeTime: authTime,
+	})
+	if err != nil {
+		logger.Error("License enforcement error", "error", err)
+		return response, err
+	}
+
+	// Update OTLP client with license context
+	otlpClient.SetLicenseContext(licStatus, env, callerAccount)
+
 	// Send successful entries to OTLP
 	if len(allEntries) > 0 {
 		logger.Info("Sending collected entries to OTLP", "count", len(allEntries))
@@ -162,6 +226,9 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 			return response, err
 		}
 	}
+
+	// Emit CloudWatch EMF Metric (asynchronous stdout)
+	license.EmitCloudWatchEMF(licStatus, env, len(allEntries))
 
 	logger.Info("Lambda execution completed", "failures", len(response.BatchItemFailures))
 	return response, nil

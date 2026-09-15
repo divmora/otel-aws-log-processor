@@ -70,3 +70,7 @@ main
 # Docker
 .dockerignore
 docker-compose.override.yml
+
+# Cryptographic release signature
+release.sig
+release.sig*
