@@ -155,6 +155,10 @@ aws lambda create-event-source-mapping \
   --batch-size 10
 ```
 
+### 4. Infrastructure as Code (CloudFormation)
+
+Production-ready AWS CloudFormation templates with automated SQS Ingestion Queue, Dead Letter Queue (DLQ), IAM least-privilege execution roles, CloudWatch alarms, and AWS Secrets Manager integration are maintained in the [`divmora/cloudformation-templates`](https://github.com/divmora/cloudformation-templates/tree/main/otel-aws-log-processor) repository.
+
 ---
 
 ## Development & Building
