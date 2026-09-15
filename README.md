@@ -29,6 +29,10 @@ This Lambda function is triggered via **Amazon SQS**, which receives S3 ObjectCr
 
 ## Architecture & Project Layout
 
+<p align="center">
+  <img src="docs/assets/architecture.png" alt="otel-aws-log-processor Architecture Diagram" width="100%">
+</p>
+
 ```
 otel-aws-log-processor/
 ├── cmd/
