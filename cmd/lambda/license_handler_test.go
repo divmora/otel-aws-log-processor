@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"os"
 	"testing"
 	"time"
 
@@ -17,8 +16,7 @@ func TestHandlerLicensingModes(t *testing.T) {
 
 	// 1. Test Non-Production Exemption
 	t.Run("NonProductionExemption", func(t *testing.T) {
-		os.Setenv("ENVIRONMENT", "staging")
-		defer os.Unsetenv("ENVIRONMENT")
+		t.Setenv("ENVIRONMENT", "staging")
 
 		sqsEvent := events.SQSEvent{
 			Records: []events.SQSMessage{},
@@ -35,11 +33,9 @@ func TestHandlerLicensingModes(t *testing.T) {
 
 	// 2. Test Production Strict Mode without License
 	t.Run("ProductionStrictWithoutLicense", func(t *testing.T) {
-		os.Setenv("ENVIRONMENT", "production")
-		os.Setenv("DIVMORA_LICENSE_MODE", "strict")
-		os.Unsetenv("DIVMORA_LICENSE_KEY")
-		defer os.Unsetenv("ENVIRONMENT")
-		defer os.Unsetenv("DIVMORA_LICENSE_MODE")
+		t.Setenv("ENVIRONMENT", "production")
+		t.Setenv("DIVMORA_LICENSE_MODE", "strict")
+		t.Setenv("DIVMORA_LICENSE_KEY", "")
 
 		sqsEvent := events.SQSEvent{
 			Records: []events.SQSMessage{},
@@ -53,11 +49,9 @@ func TestHandlerLicensingModes(t *testing.T) {
 
 	// 3. Test Production Warn Mode without License
 	t.Run("ProductionWarnWithoutLicense", func(t *testing.T) {
-		os.Setenv("ENVIRONMENT", "production")
-		os.Setenv("DIVMORA_LICENSE_MODE", "warn")
-		os.Unsetenv("DIVMORA_LICENSE_KEY")
-		defer os.Unsetenv("ENVIRONMENT")
-		defer os.Unsetenv("DIVMORA_LICENSE_MODE")
+		t.Setenv("ENVIRONMENT", "production")
+		t.Setenv("DIVMORA_LICENSE_MODE", "warn")
+		t.Setenv("DIVMORA_LICENSE_KEY", "")
 
 		sqsEvent := events.SQSEvent{
 			Records: []events.SQSMessage{},
@@ -97,12 +91,9 @@ func TestHandlerLicensingModes(t *testing.T) {
 			t.Fatalf("failed to sign token: %v", err)
 		}
 
-		os.Setenv("ENVIRONMENT", "production")
-		os.Setenv("DIVMORA_LICENSE_MODE", "strict")
-		os.Setenv("DIVMORA_LICENSE_KEY", token)
-		defer os.Unsetenv("ENVIRONMENT")
-		defer os.Unsetenv("DIVMORA_LICENSE_MODE")
-		defer os.Unsetenv("DIVMORA_LICENSE_KEY")
+		t.Setenv("ENVIRONMENT", "production")
+		t.Setenv("DIVMORA_LICENSE_MODE", "strict")
+		t.Setenv("DIVMORA_LICENSE_KEY", token)
 
 		sqsEvent := events.SQSEvent{
 			Records: []events.SQSMessage{},

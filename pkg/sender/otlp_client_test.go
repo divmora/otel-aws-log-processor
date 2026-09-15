@@ -1,14 +1,17 @@
 package sender
 
 import (
+	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
+	"time"
 
 	"github.com/divmora/otel-aws-log-processor/pkg/license"
 	"github.com/divmora/otel-aws-log-processor/pkg/model"
+	"github.com/divmora/otel-aws-log-processor/pkg/processor"
 )
 
 type mockAdapter struct {
@@ -41,13 +44,17 @@ func (m *mockAdapter) ToOTel() model.OTelLogRecord {
 }
 
 func TestOTLPClientSendLogsWithLicense(t *testing.T) {
+	receivedPayload := make(chan model.OTLPPayload, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var p model.OTLPPayload
+		_ = json.NewDecoder(r.Body).Decode(&p)
+		receivedPayload <- p
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"success"}`))
+		_, _ = w.Write([]byte(`{"status":"success"}`))
 	}))
 	defer server.Close()
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	client := NewOTLPClient(server.URL, "user", "pass", 1, 10, 2, logger)
 
 	status := &license.ValidationStatus{
@@ -60,26 +67,39 @@ func TestOTLPClientSendLogsWithLicense(t *testing.T) {
 	}
 	client.SetLicenseContext(status, "production", "123456789012")
 
-	adapters := []mockAdapter{
-		{
-			resourceKey: "res1",
-			resourceAttr: []model.OTelAttribute{
-				{Key: "service.name", Value: model.StringValue("test-service")},
-			},
+	adapter := &mockAdapter{
+		resourceKey: "res1",
+		resourceAttr: []model.OTelAttribute{
+			{Key: "service.name", Value: model.StringValue("test-service")},
 		},
 	}
 
-	var logAdapters []mockAdapter
-	logAdapters = append(logAdapters, adapters...)
-
-	// Convert to []processor.LogAdapter
-	var ifaceAdapters []any
-	for _, a := range logAdapters {
-		ifaceAdapters = append(ifaceAdapters, &a)
+	err := client.SendLogs([]processor.LogAdapter{adapter})
+	if err != nil {
+		t.Fatalf("unexpected SendLogs error: %v", err)
 	}
 
-	payload := client.buildPayload(adapters[0].GetResourceAttributes(), []model.OTelLogRecord{adapters[0].ToOTel()})
+	var payload model.OTLPPayload
+	select {
+	case payload = <-receivedPayload:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for HTTP request")
+	}
+
 	if len(payload.ResourceLogs) != 1 {
 		t.Fatalf("expected 1 ResourceLog, got %d", len(payload.ResourceLogs))
+	}
+
+	foundLicenseStatus := false
+	for _, attr := range payload.ResourceLogs[0].Resource.Attributes {
+		if attr.Key == "divmora.license.status" {
+			foundLicenseStatus = true
+			if attr.Value.StringValue == nil || *attr.Value.StringValue != "valid" {
+				t.Errorf("expected license status valid, got %v", attr.Value)
+			}
+		}
+	}
+	if !foundLicenseStatus {
+		t.Error("expected divmora.license.status in resource attributes")
 	}
 }
