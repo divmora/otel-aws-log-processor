@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 
 	"github.com/aws/aws-lambda-go/events"
 )
@@ -44,6 +45,11 @@ func ParseBodyAsS3(logger *slog.Logger, body []byte) ([]events.S3EventRecord, er
 	var s3Event events.S3Event
 	if err := json.Unmarshal(body, &s3Event); err == nil && len(s3Event.Records) > 0 {
 		if s3Event.Records[0].S3.Bucket.Name != "" {
+			for i := range s3Event.Records {
+				if unescaped, err := url.QueryUnescape(s3Event.Records[i].S3.Object.Key); err == nil {
+					s3Event.Records[i].S3.Object.Key = unescaped
+				}
+			}
 			return s3Event.Records, nil
 		}
 	}

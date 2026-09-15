@@ -53,7 +53,7 @@ func TestParseBodyAsS3(t *testing.T) {
 						"name": "direct-s3-logs-bucket"
 					},
 					"object": {
-						"key": "WAFLogs/waf.json.gz"
+						"key": "WAFLogs/waf+test%20file.json.gz"
 					}
 				}
 			}
@@ -70,8 +70,8 @@ func TestParseBodyAsS3(t *testing.T) {
 	if records[0].S3.Bucket.Name != "direct-s3-logs-bucket" {
 		t.Errorf("expected bucket 'direct-s3-logs-bucket', got '%s'", records[0].S3.Bucket.Name)
 	}
-	if records[0].S3.Object.Key != "WAFLogs/waf.json.gz" {
-		t.Errorf("expected key 'WAFLogs/waf.json.gz', got '%s'", records[0].S3.Object.Key)
+	if records[0].S3.Object.Key != "WAFLogs/waf test file.json.gz" {
+		t.Errorf("expected key 'WAFLogs/waf test file.json.gz', got '%s'", records[0].S3.Object.Key)
 	}
 
 	// 3. SNS-wrapped S3 Event
