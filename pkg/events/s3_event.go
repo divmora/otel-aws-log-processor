@@ -24,9 +24,9 @@ type EventBridgeS3Event struct {
 }
 
 // ParseBodyAsS3 parses the SQS body to extract S3 event records.
-// It supports EventBridge S3 events.
+// It supports EventBridge S3 events, direct S3 bucket notifications, and SNS-wrapped S3 events.
 func ParseBodyAsS3(logger *slog.Logger, body []byte) ([]events.S3EventRecord, error) {
-	// Try EventBridge S3 Event (common in SQS)
+	// 1. Try EventBridge S3 Event (common modern pattern: S3 -> EventBridge -> SQS)
 	var ebEvent EventBridgeS3Event
 	if err := json.Unmarshal(body, &ebEvent); err == nil {
 		if ebEvent.Source == "aws.s3" && ebEvent.Detail.Bucket.Name != "" {
@@ -40,5 +40,22 @@ func ParseBodyAsS3(logger *slog.Logger, body []byte) ([]events.S3EventRecord, er
 		}
 	}
 
-	return nil, fmt.Errorf("body does not match EventBridge S3 format")
+	// 2. Try Standard Direct S3 Event Notification (traditional pattern: S3 -> SQS)
+	var s3Event events.S3Event
+	if err := json.Unmarshal(body, &s3Event); err == nil && len(s3Event.Records) > 0 {
+		if s3Event.Records[0].S3.Bucket.Name != "" {
+			return s3Event.Records, nil
+		}
+	}
+
+	// 3. Try SNS-wrapped S3 Event (pattern: S3 -> SNS Topic -> SQS)
+	var snsMessage struct {
+		Type    string `json:"Type"`
+		Message string `json:"Message"`
+	}
+	if err := json.Unmarshal(body, &snsMessage); err == nil && snsMessage.Type == "Notification" && snsMessage.Message != "" {
+		return ParseBodyAsS3(logger, []byte(snsMessage.Message))
+	}
+
+	return nil, fmt.Errorf("body does not match EventBridge, direct S3, or SNS-wrapped S3 event format")
 }
