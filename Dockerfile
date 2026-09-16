@@ -19,8 +19,9 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -ldflags="-w -s -X gi
 # Final stage - use AWS Lambda base image
 FROM public.ecr.aws/lambda/provided:al2023
 
-# Copy the binary from builder
-COPY --from=builder /build/bootstrap ${LAMBDA_RUNTIME_DIR}/bootstrap
+# Copy the binary to Lambda task root and set execution permissions
+COPY --from=builder /build/bootstrap ${LAMBDA_TASK_ROOT}/bootstrap
+RUN chmod 755 ${LAMBDA_TASK_ROOT}/bootstrap
 
 # Set the CMD to your handler
 CMD [ "bootstrap" ]
