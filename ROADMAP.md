@@ -2,6 +2,7 @@
 
 This document serves as the **living product roadmap** for `otel-aws-log-processor`.
 - **Adding Items**: Whenever a new capability, enhancement, or edge-case improvement is identified for the future, add it here under the appropriate category.
+- **Deduplication with GitHub Issues**: If an active GitHub Issue already exists or is explicitly created for a feature, bug fix, or task, do not duplicate it in `ROADMAP.md`. GitHub Issues track active, assigned, or triaged tasks, while `ROADMAP.md` captures high-level, unassigned architectural vision and backlog capabilities.
 - **Removing Items**: Once a feature is fully implemented, verified, and committed, **remove it from this roadmap**.
 
 ---
