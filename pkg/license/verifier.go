@@ -2,16 +2,18 @@ package license
 
 import (
 	"crypto/ed25519"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
+
+	liblicense "github.com/divmora/license-go/pkg/license"
+	"github.com/divmora/otel-aws-log-processor/pkg/version"
 )
 
 // SignLicense serializes and cryptographically signs a set of Claims using an Ed25519 private key,
-// returning a compact, URL-safe Base64 token string formatted as "<payload>.<signature>".
+// returning a canonical DIV1 compact token string ("DIV1.<payload>.<sig>").
 func SignLicense(claims *Claims, privKey ed25519.PrivateKey) (string, error) {
 	if claims == nil {
 		return "", errors.New("cannot sign nil license claims")
@@ -20,142 +22,155 @@ func SignLicense(claims *Claims, privKey ed25519.PrivateKey) (string, error) {
 		return "", fmt.Errorf("invalid Ed25519 private key size: expected %d bytes, got %d", ed25519.PrivateKeySize, len(privKey))
 	}
 
-	payloadBytes, err := json.Marshal(claims)
+	signer, err := liblicense.NewSigner(privKey)
 	if err != nil {
-		return "", fmt.Errorf("failed to serialize license claims: %w", err)
+		return "", err
+	}
+	return signer.Sign(*claims)
+}
+
+// SignLicenseArmored serializes and cryptographically signs a set of Claims using an Ed25519 private key,
+// returning an armored PEM text block.
+func SignLicenseArmored(claims *Claims, privKey ed25519.PrivateKey) (string, error) {
+	if claims == nil {
+		return "", errors.New("cannot sign nil license claims")
+	}
+	if len(privKey) != ed25519.PrivateKeySize {
+		return "", fmt.Errorf("invalid Ed25519 private key size: expected %d bytes, got %d", ed25519.PrivateKeySize, len(privKey))
 	}
 
-	sigBytes := ed25519.Sign(privKey, payloadBytes)
-
-	payloadB64 := base64.RawURLEncoding.EncodeToString(payloadBytes)
-	sigB64 := base64.RawURLEncoding.EncodeToString(sigBytes)
-
-	return fmt.Sprintf("%s.%s", payloadB64, sigB64), nil
+	signer, err := liblicense.NewSigner(privKey)
+	if err != nil {
+		return "", err
+	}
+	return signer.SignArmored(*claims)
 }
 
 // ParseAndVerify decodes, parses, and cryptographically verifies an Ed25519 signed license token
 // against the current system time in UTC.
+// If pubKey is nil or empty, GetVerificationPublicKey() is used to resolve the public key.
 func ParseAndVerify(token string, pubKey ed25519.PublicKey) (*ValidationStatus, error) {
 	return ParseAndVerifyAt(token, pubKey, time.Now().UTC())
 }
 
 // ParseAndVerifyAt decodes, parses, and cryptographically verifies an Ed25519 signed license token
 // against a specified evaluation time.
+// If pubKey is nil or empty, GetVerificationKeyRing() is used to resolve the public key.
 func ParseAndVerifyAt(token string, pubKey ed25519.PublicKey, evalTime time.Time) (*ValidationStatus, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return nil, errors.New("license token cannot be empty")
 	}
 
-	parts := strings.Split(token, ".")
-	if len(parts) != 2 {
-		return nil, errors.New("malformed license token: expected format '<payload>.<signature>'")
-	}
-
-	payloadBytes, err := decodeBase64Part(parts[0])
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode license payload: %w", err)
-	}
-
-	sigBytes, err := decodeBase64Part(parts[1])
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode license signature: %w", err)
-	}
-
-	if len(sigBytes) != ed25519.SignatureSize {
-		return nil, fmt.Errorf("invalid signature length: expected %d bytes, got %d", ed25519.SignatureSize, len(sigBytes))
-	}
-
-	if len(pubKey) == 0 {
-		resolvedKey, err := GetVerificationPublicKey()
+	var keyRing *liblicense.KeyRing
+	if len(pubKey) > 0 {
+		keyRing = liblicense.NewKeyRing(pubKey)
+	} else {
+		resolvedRing, err := GetVerificationKeyRing()
 		if err != nil {
-			return nil, fmt.Errorf("failed to resolve verification key: %w", err)
+			return nil, fmt.Errorf("failed to resolve verification keyring: %w", err)
 		}
-		pubKey = resolvedKey
+		keyRing = resolvedRing
 	}
 
-	if !ed25519.Verify(pubKey, payloadBytes, sigBytes) {
-		return nil, errors.New("cryptographic signature verification failed: license token is invalid or has been tampered with")
+	var validatorOpts []liblicense.ValidatorOption
+	validatorOpts = append(validatorOpts, liblicense.WithProduct("otel-aws-log-processor"))
+	if fp := strings.TrimSpace(os.Getenv("DIVMORA_FINGERPRINT")); fp != "" {
+		validatorOpts = append(validatorOpts, liblicense.WithExpectedFingerprint(fp))
 	}
 
-	var claims Claims
-	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
-		return nil, fmt.Errorf("failed to parse license claims JSON: %w", err)
+	// 1. Software Version Enforcement:
+	vInfo := version.Get()
+	if vInfo.Version != "" && vInfo.Version != "dev" {
+		validatorOpts = append(validatorOpts, liblicense.WithCurrentVersion(vInfo.Version))
 	}
 
-	if claims.ID == "" {
-		return nil, errors.New("invalid license: missing license ID")
+	// 2. Maintenance / Support Update Cutoff Enforcement:
+	if releaseTime, ok := vInfo.ReleaseTime(); ok {
+		validatorOpts = append(validatorOpts, liblicense.WithBuildDate(releaseTime))
 	}
-	if claims.Customer.Name == "" {
-		return nil, errors.New("invalid license: missing customer name")
-	}
-	if claims.ExpiresAt.IsZero() {
-		return nil, errors.New("invalid license: missing expiration date")
+
+	validator, err := liblicense.NewValidatorWithKeyRing(keyRing, validatorOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize license validator: %w", err)
 	}
 
 	if evalTime.IsZero() {
 		evalTime = time.Now().UTC()
 	}
-	now := evalTime.UTC()
-	daysRemaining := int(claims.ExpiresAt.Sub(now).Hours() / 24)
 
-	// Active (before ExpiresAt)
-	if now.Before(claims.ExpiresAt) {
+	res, err := validator.VerifyWithResultAt(token, evalTime)
+	if err != nil {
+		var scopeErr *liblicense.ScopeMismatchError
+		if errors.As(err, &scopeErr) {
+			// Token signature, product, and expiration are verified; scope is evaluated by Enforce against active targets.
+			claims, inspectErr := liblicense.Inspect(token)
+			if inspectErr == nil {
+				daysRemaining := claims.DaysRemainingAt(evalTime)
+				inGrace := claims.IsInGracePeriodAt(evalTime)
+				if inGrace {
+					daysRemaining = claims.GraceDaysRemainingAt(evalTime)
+				}
+				statusReason := "valid"
+				if inGrace {
+					statusReason = "grace_period"
+				}
+				var msg string
+				if inGrace {
+					msg = fmt.Sprintf("License expired on %s; currently operating within %d-day grace period (%d days remaining)",
+						claims.ExpiresAt.Format("2006-01-02"), claims.GracePeriodDays, daysRemaining)
+				} else if claims.IsPerpetual() {
+					msg = "Perpetual commercial license is valid and active"
+				} else {
+					msg = fmt.Sprintf("License is valid and active (%d days remaining)", daysRemaining)
+				}
+				return &ValidationStatus{
+					Valid:         true,
+					InGracePeriod: inGrace,
+					DaysRemaining: daysRemaining,
+					StatusReason:  statusReason,
+					Message:       msg,
+					Claims:        claims,
+				}, nil
+			}
+		}
+
+		claims, _ := liblicense.Inspect(token)
+		statusReason := "invalid"
+		if errors.Is(err, liblicense.ErrExpired) {
+			statusReason = "expired"
+		}
 		return &ValidationStatus{
-			Valid:         true,
-			InGracePeriod: false,
-			DaysRemaining: daysRemaining,
-			StatusReason:  "valid",
-			Message:       fmt.Sprintf("License is valid and active (%d days remaining)", daysRemaining),
-			Claims:        &claims,
-		}, nil
+			Valid:        false,
+			StatusReason: statusReason,
+			Message:      err.Error(),
+			Claims:       claims,
+		}, err
 	}
 
-	// Past ExpiresAt: check grace period
-	graceDays := claims.EffectiveGracePeriodDays()
-	graceEnd := claims.ExpiresAt.AddDate(0, 0, graceDays)
-
-	if now.Before(graceEnd) {
-		graceRemaining := int(graceEnd.Sub(now).Hours() / 24)
-		return &ValidationStatus{
-			Valid:         true,
-			InGracePeriod: true,
-			DaysRemaining: graceRemaining,
-			StatusReason:  "grace_period",
-			Message: fmt.Sprintf("License expired on %s; currently operating within %d-day grace period (%d days remaining)",
-				claims.ExpiresAt.Format("2006-01-02"), graceDays, graceRemaining),
-			Claims: &claims,
-		}, nil
+	daysRemaining := res.Claims.DaysRemainingAt(evalTime)
+	if res.InGracePeriod {
+		daysRemaining = res.GraceDaysRemaining
 	}
 
-	// Expired past grace period
+	statusReason := "valid"
+	var msg string
+	if res.InGracePeriod {
+		statusReason = "grace_period"
+		msg = fmt.Sprintf("License expired on %s; currently operating within %d-day grace period (%d days remaining)",
+			res.Claims.ExpiresAt.Format("2006-01-02"), res.Claims.GracePeriodDays, res.GraceDaysRemaining)
+	} else if res.Claims.IsPerpetual() {
+		msg = "Perpetual commercial license is valid and active"
+	} else {
+		msg = fmt.Sprintf("License is valid and active (%d days remaining)", daysRemaining)
+	}
+
 	return &ValidationStatus{
-		Valid:         false,
-		InGracePeriod: false,
-		DaysRemaining: 0,
-		StatusReason:  "expired",
-		Message: fmt.Sprintf("License expired on %s; grace period of %d days has elapsed",
-			claims.ExpiresAt.Format("2006-01-02"), graceDays),
-		Claims: &claims,
-	}, fmt.Errorf("license expired on %s; grace period of %d days has elapsed", claims.ExpiresAt.Format("2006-01-02"), graceDays)
-}
-
-func decodeBase64Part(part string) ([]byte, error) {
-	// Try RawURLEncoding first
-	data, err := base64.RawURLEncoding.DecodeString(part)
-	if err == nil {
-		return data, nil
-	}
-	// Try URLEncoding
-	data, err = base64.URLEncoding.DecodeString(part)
-	if err == nil {
-		return data, nil
-	}
-	// Try RawStdEncoding
-	data, err = base64.RawStdEncoding.DecodeString(part)
-	if err == nil {
-		return data, nil
-	}
-	// Try StdEncoding
-	return base64.StdEncoding.DecodeString(part)
+		Valid:         true,
+		InGracePeriod: res.InGracePeriod,
+		DaysRemaining: daysRemaining,
+		StatusReason:  statusReason,
+		Message:       msg,
+		Claims:        res.Claims,
+	}, nil
 }

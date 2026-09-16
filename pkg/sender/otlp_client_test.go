@@ -62,7 +62,7 @@ func TestOTLPClientSendLogsWithLicense(t *testing.T) {
 		StatusReason: "valid",
 		Claims: &license.Claims{
 			ID:   "lic_test_123",
-			Tier: license.TierEnterprise,
+			Plan: license.TierEnterprise,
 		},
 	}
 	client.SetLicenseContext(status, "production", "123456789012")

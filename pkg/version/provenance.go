@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	liblicense "github.com/divmora/license-go/pkg/license"
 )
 
 // DefaultReleasePublicKeyBase64 is the embedded production Ed25519 public verification key for DIVMORA Technologies.
@@ -44,11 +46,14 @@ const (
 
 // ReleaseClaims represents the canonical metadata envelope signed by DIVMORA Technologies.
 type ReleaseClaims struct {
-	Version     string `json:"version"`
-	GitCommit   string `json:"git_commit"`
-	BuildDate   string `json:"build_date"`
-	Authority   string `json:"authority"`
-	AuthorityID string `json:"authority_id,omitempty"`
+	Product      string `json:"product,omitempty"`
+	Version      string `json:"version"`
+	GitCommit    string `json:"git_commit,omitempty"`
+	BuildDate    string `json:"build_date"`
+	ReleaseDate  string `json:"release_date,omitempty"`
+	BinaryDigest string `json:"binary_digest,omitempty"`
+	Authority    string `json:"authority"`
+	AuthorityID  string `json:"authority_id,omitempty"`
 }
 
 // ReleaseProvenance holds the verified release attestation state and claims.
@@ -113,7 +118,7 @@ func GetReleaseVerificationPublicKey() (ed25519.PublicKey, error) {
 }
 
 // SignRelease serializes and cryptographically signs a set of ReleaseClaims using an Ed25519 private key,
-// returning a URL-safe Base64 token string formatted as "<payload>.<signature>".
+// returning a canonical DIVREL1 compact token string ("DIVREL1.<payload>.<signature>").
 func SignRelease(claims *ReleaseClaims, privKey ed25519.PrivateKey) (string, error) {
 	if claims == nil {
 		return "", errors.New("cannot sign nil release claims")
@@ -121,23 +126,80 @@ func SignRelease(claims *ReleaseClaims, privKey ed25519.PrivateKey) (string, err
 	if len(privKey) != ed25519.PrivateKeySize {
 		return "", fmt.Errorf("invalid Ed25519 private key size: expected %d bytes, got %d", ed25519.PrivateKeySize, len(privKey))
 	}
-	if claims.Authority == "" {
-		claims.Authority = "DIVMORA Technologies Release Authority"
+	product := claims.Product
+	if product == "" {
+		product = "otel-aws-log-processor"
+	}
+	authority := claims.Authority
+	if authority == "" {
+		authority = "DIVMORA Technologies Release Authority"
 	}
 
-	payloadBytes, err := json.Marshal(claims)
-	if err != nil {
-		return "", fmt.Errorf("failed to serialize release claims: %w", err)
+	bDate, _ := parseAnyDate(claims.BuildDate)
+	if bDate.IsZero() {
+		bDate = time.Now().UTC()
+	}
+	rDate, _ := parseAnyDate(claims.ReleaseDate)
+	if rDate.IsZero() {
+		rDate = bDate
 	}
 
-	sigBytes := ed25519.Sign(privKey, payloadBytes)
-	payloadB64 := base64.RawURLEncoding.EncodeToString(payloadBytes)
-	sigB64 := base64.RawURLEncoding.EncodeToString(sigBytes)
+	libClaims := liblicense.ReleaseClaims{
+		Product:      product,
+		Version:      claims.Version,
+		GitCommit:    claims.GitCommit,
+		BuildDate:    bDate,
+		ReleaseDate:  rDate,
+		BinaryDigest: claims.BinaryDigest,
+		Authority:    authority,
+		KeyID:        claims.AuthorityID,
+	}
 
-	return fmt.Sprintf("%s.%s", payloadB64, sigB64), nil
+	return liblicense.SignRelease(libClaims, privKey)
+}
+
+// SignReleaseArmored signs release claims and formats as an armored PEM block.
+func SignReleaseArmored(claims *ReleaseClaims, privKey ed25519.PrivateKey) (string, error) {
+	if claims == nil {
+		return "", errors.New("cannot sign nil release claims")
+	}
+	if len(privKey) != ed25519.PrivateKeySize {
+		return "", fmt.Errorf("invalid Ed25519 private key size: expected %d bytes, got %d", ed25519.PrivateKeySize, len(privKey))
+	}
+	product := claims.Product
+	if product == "" {
+		product = "otel-aws-log-processor"
+	}
+	authority := claims.Authority
+	if authority == "" {
+		authority = "DIVMORA Technologies Release Authority"
+	}
+
+	bDate, _ := parseAnyDate(claims.BuildDate)
+	if bDate.IsZero() {
+		bDate = time.Now().UTC()
+	}
+	rDate, _ := parseAnyDate(claims.ReleaseDate)
+	if rDate.IsZero() {
+		rDate = bDate
+	}
+
+	libClaims := liblicense.ReleaseClaims{
+		Product:      product,
+		Version:      claims.Version,
+		GitCommit:    claims.GitCommit,
+		BuildDate:    bDate,
+		ReleaseDate:  rDate,
+		BinaryDigest: claims.BinaryDigest,
+		Authority:    authority,
+		KeyID:        claims.AuthorityID,
+	}
+
+	return liblicense.SignReleaseArmored(libClaims, privKey)
 }
 
 // ParseAndVerifyReleaseToken decodes, parses, and cryptographically verifies an Ed25519 signed release token.
+// It supports canonical DIVREL1 compact tokens, armored PEM blocks, and legacy 2-part tokens.
 // If pubKey is nil or empty, GetReleaseVerificationPublicKey() is used.
 func ParseAndVerifyReleaseToken(token string, pubKey ed25519.PublicKey) (*ReleaseClaims, error) {
 	token = strings.TrimSpace(token)
@@ -145,9 +207,45 @@ func ParseAndVerifyReleaseToken(token string, pubKey ed25519.PublicKey) (*Releas
 		return nil, errors.New("release token cannot be empty")
 	}
 
+	if len(pubKey) == 0 {
+		var err error
+		pubKey, err = GetReleaseVerificationPublicKey()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// 1. Canonical DIVREL1 or armored PEM block
+	if strings.HasPrefix(token, liblicense.ProtocolPrefixRelease+".") || strings.HasPrefix(token, "-----BEGIN") {
+		ring := liblicense.NewKeyRing(pubKey)
+		libClaims, _, err := liblicense.VerifyRelease(token, ring)
+		if err != nil {
+			return nil, err
+		}
+		buildDateStr := ""
+		if !libClaims.BuildDate.IsZero() {
+			buildDateStr = libClaims.BuildDate.UTC().Format(time.RFC3339)
+		}
+		releaseDateStr := ""
+		if !libClaims.ReleaseDate.IsZero() {
+			releaseDateStr = libClaims.ReleaseDate.UTC().Format(time.RFC3339)
+		}
+		return &ReleaseClaims{
+			Product:      libClaims.Product,
+			Version:      libClaims.Version,
+			GitCommit:    libClaims.GitCommit,
+			BuildDate:    buildDateStr,
+			ReleaseDate:  releaseDateStr,
+			BinaryDigest: libClaims.BinaryDigest,
+			Authority:    libClaims.Authority,
+			AuthorityID:  libClaims.KeyID,
+		}, nil
+	}
+
+	// 2. Legacy 2-part token (<payload>.<signature>)
 	parts := strings.Split(token, ".")
 	if len(parts) != 2 {
-		return nil, errors.New("malformed release token: expected format '<payload>.<signature>'")
+		return nil, errors.New("malformed release token: expected format 'DIVREL1.<payload>.<sig>' or '<payload>.<signature>'")
 	}
 
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
@@ -168,14 +266,6 @@ func ParseAndVerifyReleaseToken(token string, pubKey ed25519.PublicKey) (*Releas
 
 	if len(sigBytes) != ed25519.SignatureSize {
 		return nil, fmt.Errorf("invalid release signature size: expected %d bytes, got %d", ed25519.SignatureSize, len(sigBytes))
-	}
-
-	if len(pubKey) == 0 {
-		var err error
-		pubKey, err = GetReleaseVerificationPublicKey()
-		if err != nil {
-			return nil, err
-		}
 	}
 
 	if !ed25519.Verify(pubKey, payloadBytes, sigBytes) {
@@ -256,6 +346,21 @@ func (i Info) EvaluateProvenance(pubKey ed25519.PublicKey) ReleaseProvenance {
 		}
 	}
 
+	// Verify Product match (if specified)
+	if claims.Product != "" && claims.Product != "*" && claims.Product != "all" {
+		if !strings.EqualFold(claims.Product, "otel-aws-log-processor") {
+			return ReleaseProvenance{
+				Status:       ProvenanceTamperedMetadata,
+				Verified:     false,
+				Source:       source,
+				Authority:    claims.Authority,
+				AuthorityID:  claims.AuthorityID,
+				Error:        fmt.Sprintf("Product mismatch: binary expects 'otel-aws-log-processor', but signed claims specify '%s'", claims.Product),
+				SignedClaims: claims,
+			}
+		}
+	}
+
 	// Verify Version match (normalize leading "v")
 	expectedVer := strings.TrimPrefix(strings.TrimSpace(claims.Version), "v")
 	actualVer := strings.TrimPrefix(strings.TrimSpace(i.Version), "v")
@@ -298,6 +403,28 @@ func (i Info) EvaluateProvenance(pubKey ed25519.PublicKey) ReleaseProvenance {
 			AuthorityID:  claims.AuthorityID,
 			Error:        fmt.Sprintf("Build date mismatch: binary compiled with date '%s', but signed claims specify '%s'", i.BuildDate, claims.BuildDate),
 			SignedClaims: claims,
+		}
+	}
+
+	// Verify Binary Digest (if specified in claims)
+	if claims.BinaryDigest != "" {
+		if execPath, err := os.Executable(); err == nil && execPath != "" {
+			computedDigest, err := liblicense.ComputeFileDigest(execPath)
+			if err == nil {
+				d1 := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(claims.BinaryDigest)), "sha256:")
+				d2 := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(computedDigest)), "sha256:")
+				if d1 != d2 {
+					return ReleaseProvenance{
+						Status:       ProvenanceTamperedMetadata,
+						Verified:     false,
+						Source:       source,
+						Authority:    claims.Authority,
+						AuthorityID:  claims.AuthorityID,
+						Error:        fmt.Sprintf("Binary digest mismatch: computed %s, but signed claims specify %s", computedDigest, claims.BinaryDigest),
+						SignedClaims: claims,
+					}
+				}
+			}
 		}
 	}
 

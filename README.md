@@ -225,8 +225,9 @@ This project is licensed under the **Business Source License 1.1 (BSL 1.1)** - s
 Set your cryptographic license token via environment variable in your Lambda deployment or Terraform module:
 
 ```bash
-export DIVMORA_LICENSE_KEY="<base64-ed25519-signed-token>"
+export DIVMORA_LICENSE_KEY="DIV1.<payload>.<signature>"
 ```
+
 
 ### Production Enforcement Modes
 

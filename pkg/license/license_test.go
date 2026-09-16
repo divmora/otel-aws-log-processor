@@ -3,6 +3,7 @@ package license
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,20 +29,27 @@ func TestSignAndVerifyToken(t *testing.T) {
 			Email: "admin@acme.com",
 			OrgID: "org_123",
 		},
-		Tier:               TierEnterprise,
-		AllowedAWSAccounts: []string{"123456789012", "987654321098"},
-		Features:           []string{"*"},
-		IssuedAt:           now,
-		ExpiresAt:          now.AddDate(1, 0, 0),
-		GracePeriodDays:    14,
+		Product: "otel-aws-log-processor",
+		Plan:    TierEnterprise,
+		Scope: &Scope{
+			Accounts: []string{"123456789012", "987654321098"},
+		},
+		Features:        []string{"*"},
+		IssuedAt:        now,
+		ExpiresAt:       now.AddDate(1, 0, 0),
+		GracePeriodDays: 14,
 	}
 
+	// 1. Compact token format
 	token, err := SignLicense(claims, privKey)
 	if err != nil {
 		t.Fatalf("unexpected error signing license: %v", err)
 	}
 	if token == "" {
 		t.Fatal("expected non-empty token")
+	}
+	if !strings.HasPrefix(token, "DIV1.") {
+		t.Errorf("expected token to start with DIV1., got %s", token)
 	}
 
 	// Verify active
@@ -58,6 +66,25 @@ func TestSignAndVerifyToken(t *testing.T) {
 	if status.Claims.Customer.Name != "Acme Corp" {
 		t.Errorf("got customer %s, want Acme Corp", status.Claims.Customer.Name)
 	}
+	if status.Claims.Plan != TierEnterprise {
+		t.Errorf("got plan %s, want %s", status.Claims.Plan, TierEnterprise)
+	}
+
+	// 2. Armored text format
+	armored, err := SignLicenseArmored(claims, privKey)
+	if err != nil {
+		t.Fatalf("unexpected error signing armored license: %v", err)
+	}
+	if !strings.Contains(armored, "-----BEGIN DIVMORA LICENSE KEY-----") {
+		t.Errorf("expected armored header, got: %s", armored)
+	}
+	armoredStatus, err := ParseAndVerifyAt(armored, pubKey, now.AddDate(0, 1, 0))
+	if err != nil {
+		t.Fatalf("unexpected armored verification error: %v", err)
+	}
+	if !armoredStatus.Valid || armoredStatus.Claims.ID != "lic_test_123" {
+		t.Errorf("armored verification failed: %+v", armoredStatus)
+	}
 
 	// Verify Grace Period
 	expiredTime := now.AddDate(1, 0, 5) // 5 days past expiry, within 14d grace
@@ -67,6 +94,9 @@ func TestSignAndVerifyToken(t *testing.T) {
 	}
 	if !graceStatus.Valid || !graceStatus.InGracePeriod {
 		t.Error("expected valid within grace period")
+	}
+	if graceStatus.StatusReason != "grace_period" {
+		t.Errorf("got status reason %s, want grace_period", graceStatus.StatusReason)
 	}
 
 	// Verify Hard Expired (past 14 days)
@@ -78,6 +108,33 @@ func TestSignAndVerifyToken(t *testing.T) {
 	if hardStatus.Valid {
 		t.Error("expected invalid for hard expired license")
 	}
+	if hardStatus.StatusReason != "expired" {
+		t.Errorf("got status reason %s, want expired", hardStatus.StatusReason)
+	}
+}
+
+func TestProductMismatch(t *testing.T) {
+	pubKey, privKey := generateTestKeyPair(t)
+	now := time.Now().UTC()
+
+	claims := &Claims{
+		ID:        "lic_wrong_prod",
+		Customer:  Customer{Name: "Acme Corp"},
+		Product:   "other-product",
+		Plan:      TierEnterprise,
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+	}
+
+	token, err := SignLicense(claims, privKey)
+	if err != nil {
+		t.Fatalf("failed to sign token: %v", err)
+	}
+
+	_, err = ParseAndVerifyAt(token, pubKey, now)
+	if err == nil {
+		t.Error("expected error for mismatched product")
+	}
 }
 
 func TestTamperedToken(t *testing.T) {
@@ -87,7 +144,8 @@ func TestTamperedToken(t *testing.T) {
 	claims := &Claims{
 		ID:        "lic_tamper",
 		Customer:  Customer{Name: "Evil Corp"},
-		Tier:      TierPro,
+		Product:   "otel-aws-log-processor",
+		Plan:      TierPro,
 		IssuedAt:  now,
 		ExpiresAt: now.AddDate(0, 1, 0),
 	}
@@ -98,7 +156,7 @@ func TestTamperedToken(t *testing.T) {
 	}
 
 	// Tamper with payload
-	tamperedToken := "eyJjdXN0b21lciI6eyJuYW1lIjoiSGFja2VkIn19" + token[stringsIndex(token, '.'):]
+	tamperedToken := token[:len(token)-5] + "AAAAA"
 	_, err = ParseAndVerifyAt(tamperedToken, pubKey, now)
 	if err == nil {
 		t.Error("expected error for tampered token")
@@ -200,12 +258,15 @@ func TestEnforceProductionWithLicenseAndAccountScoping(t *testing.T) {
 	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
 
 	claims := &Claims{
-		ID:                 "lic_account_test",
-		Customer:           Customer{Name: "Target Corp"},
-		Tier:               TierEnterprise,
-		AllowedAWSAccounts: []string{"111122223333"},
-		IssuedAt:           now,
-		ExpiresAt:          now.AddDate(1, 0, 0),
+		ID:       "lic_account_test",
+		Customer: Customer{Name: "Target Corp"},
+		Product:  "otel-aws-log-processor",
+		Plan:     TierEnterprise,
+		Scope: &Scope{
+			Accounts: []string{"111122223333"},
+		},
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
 	}
 
 	token, err := SignLicense(claims, privKey)
@@ -266,7 +327,8 @@ func TestClockSkewDefense(t *testing.T) {
 	claims := &Claims{
 		ID:        "lic_clock",
 		Customer:  Customer{Name: "Time Corp"},
-		Tier:      TierEnterprise,
+		Product:   "otel-aws-log-processor",
+		Plan:      TierEnterprise,
 		IssuedAt:  authTime,
 		ExpiresAt: authTime.AddDate(0, 1, 0), // expires in 1 month
 	}
@@ -314,7 +376,7 @@ func TestAppendLicenseAttributes(t *testing.T) {
 		StatusReason: "valid",
 		Claims: &Claims{
 			ID:   "lic_100",
-			Tier: TierEnterprise,
+			Plan: TierEnterprise,
 		},
 	}
 
@@ -336,13 +398,4 @@ func TestAppendLicenseAttributes(t *testing.T) {
 	if !foundStatus || !foundTier {
 		t.Error("expected to find divmora.license.status and divmora.license.tier attributes")
 	}
-}
-
-func stringsIndex(s string, substr rune) int {
-	for i, r := range s {
-		if r == substr {
-			return i
-		}
-	}
-	return -1
 }

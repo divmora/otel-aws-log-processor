@@ -3,6 +3,8 @@ package version_test
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -222,4 +224,101 @@ func TestResolveReleaseSignature_SidecarFile(t *testing.T) {
 	resolved, source := version.ResolveReleaseSignature()
 	assert.Equal(t, token, resolved)
 	assert.Contains(t, source, "sidecar file")
+}
+
+func TestSignAndVerifyReleaseToken_ArmoredPEM(t *testing.T) {
+	pub, priv := generateTestReleaseKeyPair(t)
+
+	claims := &version.ReleaseClaims{
+		Product:     "otel-aws-log-processor",
+		Version:     "0.2.0",
+		GitCommit:   "1234567890abcdef",
+		BuildDate:   "2026-09-16T12:00:00Z",
+		Authority:   "DIVMORA Technologies Release Authority",
+		AuthorityID: "key-prod-1",
+	}
+
+	armored, err := version.SignReleaseArmored(claims, priv)
+	require.NoError(t, err)
+	assert.Contains(t, armored, "-----BEGIN DIVMORA RELEASE ATTESTATION-----")
+	assert.Contains(t, armored, "-----END DIVMORA RELEASE ATTESTATION-----")
+
+	parsed, err := version.ParseAndVerifyReleaseToken(armored, pub)
+	require.NoError(t, err)
+	assert.Equal(t, "otel-aws-log-processor", parsed.Product)
+	assert.Equal(t, "0.2.0", parsed.Version)
+	assert.Equal(t, "1234567890abcdef", parsed.GitCommit)
+	assert.Equal(t, "key-prod-1", parsed.AuthorityID)
+}
+
+func TestEvaluateProvenance_ProductMismatch(t *testing.T) {
+	pub, priv := generateTestReleaseKeyPair(t)
+	version.SetReleaseVerificationPublicKey(pub)
+	defer version.ResetReleaseVerificationPublicKey()
+
+	origVer := version.Version
+	origCommit := version.GitCommit
+	origDate := version.BuildDate
+	origSig := version.ReleaseSignature
+	defer func() {
+		version.Version = origVer
+		version.GitCommit = origCommit
+		version.BuildDate = origDate
+		version.ReleaseSignature = origSig
+	}()
+
+	version.Version = "0.2.0"
+	version.GitCommit = "aaa111"
+	version.BuildDate = "2026-09-16T12:00:00Z"
+
+	// Signed for another product
+	claims := &version.ReleaseClaims{
+		Product:   "other-product-agent",
+		Version:   "0.2.0",
+		GitCommit: "aaa111",
+		BuildDate: "2026-09-16T12:00:00Z",
+	}
+	token, err := version.SignRelease(claims, priv)
+	require.NoError(t, err)
+	version.ReleaseSignature = token
+
+	info := version.Get()
+	assert.False(t, info.Provenance.Verified)
+	assert.Equal(t, version.ProvenanceTamperedMetadata, info.Provenance.Status)
+	assert.Contains(t, info.Provenance.Error, "Product mismatch")
+}
+
+func TestEvaluateProvenance_LegacyTwoPartToken(t *testing.T) {
+	pub, priv := generateTestReleaseKeyPair(t)
+	version.SetReleaseVerificationPublicKey(pub)
+	defer version.ResetReleaseVerificationPublicKey()
+
+	origVer := version.Version
+	origCommit := version.GitCommit
+	origDate := version.BuildDate
+	origSig := version.ReleaseSignature
+	defer func() {
+		version.Version = origVer
+		version.GitCommit = origCommit
+		version.BuildDate = origDate
+		version.ReleaseSignature = origSig
+	}()
+
+	version.Version = "0.2.0"
+	version.GitCommit = "c0ffee"
+	version.BuildDate = "2026-09-12T12:00:00Z"
+
+	// Manually construct legacy 2-part token (<payloadB64>.<sigB64>)
+	legacyPayload := `{"version":"0.2.0","git_commit":"c0ffee","build_date":"2026-09-12T12:00:00Z","authority":"DIVMORA Technologies"}`
+	sig := ed25519.Sign(priv, []byte(legacyPayload))
+	payloadB64 := base64.RawURLEncoding.EncodeToString([]byte(legacyPayload))
+	sigB64 := base64.RawURLEncoding.EncodeToString(sig)
+	legacyToken := fmt.Sprintf("%s.%s", payloadB64, sigB64)
+
+	version.ReleaseSignature = legacyToken
+
+	info := version.Get()
+	assert.True(t, info.Provenance.Verified)
+	assert.Equal(t, version.ProvenanceVerifiedOfficial, info.Provenance.Status)
+	assert.Equal(t, "DIVMORA Technologies", info.Provenance.Authority)
 }

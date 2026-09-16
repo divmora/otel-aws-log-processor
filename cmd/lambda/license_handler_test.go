@@ -80,10 +80,13 @@ func TestHandlerLicensingModes(t *testing.T) {
 			Customer: license.Customer{
 				Name: "Enterprise Customer",
 			},
-			Tier:               license.TierEnterprise,
-			AllowedAWSAccounts: []string{"*"},
-			IssuedAt:           time.Now().UTC(),
-			ExpiresAt:          time.Now().UTC().AddDate(1, 0, 0),
+			Product: "otel-aws-log-processor",
+			Plan:    license.TierEnterprise,
+			Scope: &license.Scope{
+				Accounts: []string{"*"},
+			},
+			IssuedAt:  time.Now().UTC(),
+			ExpiresAt: time.Now().UTC().AddDate(1, 0, 0),
 		}
 
 		token, err := license.SignLicense(claims, privKey)

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	liblicense "github.com/divmora/license-go/pkg/license"
 	"github.com/divmora/otel-aws-log-processor/pkg/license"
 	"github.com/divmora/otel-aws-log-processor/pkg/version"
 )
@@ -31,6 +32,8 @@ func main() {
 		handleInspect(os.Args[2:])
 	case "sign-release":
 		handleSignRelease(os.Args[2:])
+	case "verify-release":
+		handleVerifyRelease(os.Args[2:])
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -47,10 +50,11 @@ Usage:
   license-gen <command> [flags]
 
 Commands:
-  keygen        Generate a new Ed25519 cryptographic key pair
-  generate      Mint and sign a new commercial license token
-  inspect       Decode and inspect a signed license token
-  sign-release  Cryptographically sign official release metadata for binary provenance
+  keygen          Generate a new Ed25519 cryptographic key pair
+  generate        Mint and sign a new commercial license token
+  inspect         Decode and inspect a signed license token
+  sign-release    Cryptographically sign official release metadata for binary provenance
+  verify-release  Cryptographically verify an official release attestation token
 
 Examples:
   # Generate a keypair
@@ -98,12 +102,15 @@ func handleGenerate(args []string) {
 	customerName := fs.String("customer", "", "Customer name (required)")
 	customerEmail := fs.String("email", "", "Customer email")
 	orgID := fs.String("org-id", "", "Customer organization ID")
+	product := fs.String("product", "otel-aws-log-processor", "Product identifier")
 	tier := fs.String("tier", license.TierEnterprise, "Subscription tier (enterprise, pro, trial, community)")
 	accounts := fs.String("accounts", "*", "Comma-separated list of allowed AWS Account IDs (or '*' for any)")
 	features := fs.String("features", "*", "Comma-separated list of enabled features (or '*' for all)")
 	durationDays := fs.Int("duration-days", 365, "License validity duration in days")
 	gracePeriodDays := fs.Int("grace-period-days", 14, "Grace period in days after expiration")
 	privKeyB64 := fs.String("private-key", "", "Base64-encoded Ed25519 private signing key (or set DIVMORA_PRIVATE_KEY)")
+	armoredFlag := fs.Bool("armored", false, "Generate human-readable armored text block format")
+	outFileFlag := fs.String("out-file", "", "Write license token to file")
 
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
@@ -165,26 +172,47 @@ func handleGenerate(args []string) {
 			Email: *customerEmail,
 			OrgID: *orgID,
 		},
-		Tier:               *tier,
-		AllowedAWSAccounts: accList,
-		Features:           featList,
-		IssuedAt:           now,
-		ExpiresAt:          expiresAt,
-		GracePeriodDays:    *gracePeriodDays,
+		Product: *product,
+		Plan:    *tier,
+		Scope: &license.Scope{
+			Accounts: accList,
+		},
+		Features:        featList,
+		IssuedAt:        now,
+		ExpiresAt:       expiresAt,
+		GracePeriodDays: *gracePeriodDays,
 	}
 
-	token, err := license.SignLicense(claims, ed25519.PrivateKey(privKeyBytes))
+	var token string
+	if *armoredFlag {
+		token, err = license.SignLicenseArmored(claims, ed25519.PrivateKey(privKeyBytes))
+	} else {
+		token, err = license.SignLicense(claims, ed25519.PrivateKey(privKeyBytes))
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to sign license: %v\n", err)
 		os.Exit(1)
 	}
 
+	if *outFileFlag != "" {
+		if err := os.WriteFile(*outFileFlag, []byte(token+"\n"), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing license to %s: %v\n", *outFileFlag, err)
+			os.Exit(1)
+		}
+	}
+
 	fmt.Println("Commercial License Generated Successfully!")
 	fmt.Printf("  License ID:   %s\n", claims.ID)
 	fmt.Printf("  Customer:     %s\n", claims.Customer.Name)
-	fmt.Printf("  Tier:         %s\n", claims.Tier)
-	fmt.Printf("  AWS Accounts: %s\n", strings.Join(claims.AllowedAWSAccounts, ", "))
+	fmt.Printf("  Product:      %s\n", claims.Product)
+	fmt.Printf("  Tier / Plan:  %s\n", claims.Plan)
+	if claims.Scope != nil && len(claims.Scope.Accounts) > 0 {
+		fmt.Printf("  AWS Accounts: %s\n", strings.Join(claims.Scope.Accounts, ", "))
+	}
 	fmt.Printf("  Expires:      %s (%d days)\n", claims.ExpiresAt.Format("2006-01-02"), *durationDays)
+	if *outFileFlag != "" {
+		fmt.Printf("  Saved To:     %s\n", *outFileFlag)
+	}
 	fmt.Println("\nLicense Token (set as DIVMORA_LICENSE_KEY):")
 	fmt.Println(token)
 }
@@ -262,9 +290,14 @@ func resolvePrivateKey(inlineKey, keyFile string) ([]byte, error) {
 func handleSignRelease(args []string) {
 	fs := flag.NewFlagSet("sign-release", flag.ExitOnError)
 
+	productFlag := fs.String("product", "otel-aws-log-processor", "Product identifier (e.g. otel-aws-log-processor)")
 	ver := fs.String("version", "", "Release version string (e.g. 0.2.0, required)")
 	commit := fs.String("commit", "", "Git commit SHA (required)")
 	buildDate := fs.String("build-date", "", "RFC3339 build timestamp (default: current UTC time)")
+	releaseDateFlag := fs.String("release-date", "", "Optional RFC3339 release timestamp (defaults to build date)")
+	binaryFlag := fs.String("binary", "", "Optional path to binary executable to compute and embed SHA-256 digest")
+	digestFlag := fs.String("digest", "", "Optional explicit binary digest (e.g. sha256:...)")
+	armoredFlag := fs.Bool("armored", false, "Output as armored PEM block rather than compact token")
 	authority := fs.String("authority", "DIVMORA Technologies Release Authority", "Release signing authority")
 	authorityID := fs.String("authority-id", "", "Optional authority identifier")
 	privKeyFlag := fs.String("private-key", "", "Base64-encoded Ed25519 private signing key")
@@ -303,6 +336,28 @@ func handleSignRelease(args []string) {
 		}
 	}
 
+	relDate := strings.TrimSpace(*releaseDateFlag)
+	if relDate == "" {
+		relDate = date
+	} else {
+		if _, err := time.Parse(time.RFC3339, relDate); err != nil {
+			if _, err := time.Parse("2006-01-02", relDate); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: invalid release-date format (expected RFC3339 e.g. 2026-09-12T12:00:00Z): %v\n", err)
+				os.Exit(1)
+			}
+		}
+	}
+
+	binaryDigest := strings.TrimSpace(*digestFlag)
+	if binaryDigest == "" && *binaryFlag != "" {
+		d, err := liblicense.ComputeFileDigest(*binaryFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to compute binary digest from %s: %v\n", *binaryFlag, err)
+			os.Exit(1)
+		}
+		binaryDigest = d
+	}
+
 	privKeyBytes, err := resolvePrivateKey(*privKeyFlag, *privKeyFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -310,14 +365,22 @@ func handleSignRelease(args []string) {
 	}
 
 	claims := &version.ReleaseClaims{
-		Version:     *ver,
-		GitCommit:   *commit,
-		BuildDate:   date,
-		Authority:   *authority,
-		AuthorityID: *authorityID,
+		Product:      *productFlag,
+		Version:      *ver,
+		GitCommit:    *commit,
+		BuildDate:    date,
+		ReleaseDate:  relDate,
+		BinaryDigest: binaryDigest,
+		Authority:    *authority,
+		AuthorityID:  *authorityID,
 	}
 
-	token, err := version.SignRelease(claims, ed25519.PrivateKey(privKeyBytes))
+	var token string
+	if *armoredFlag {
+		token, err = version.SignReleaseArmored(claims, ed25519.PrivateKey(privKeyBytes))
+	} else {
+		token, err = version.SignRelease(claims, ed25519.PrivateKey(privKeyBytes))
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error signing release: %v\n", err)
 		os.Exit(1)
@@ -341,9 +404,16 @@ func handleSignRelease(args []string) {
 	fmt.Println("================================================================================")
 	fmt.Println("DIVMORA Technologies: Cryptographic Release Attestation")
 	fmt.Println("================================================================================")
+	fmt.Printf("Product         : %s\n", *productFlag)
 	fmt.Printf("Version         : %s\n", *ver)
 	fmt.Printf("Git Commit      : %s\n", *commit)
 	fmt.Printf("Build Date      : %s\n", date)
+	if relDate != date {
+		fmt.Printf("Release Date    : %s\n", relDate)
+	}
+	if binaryDigest != "" {
+		fmt.Printf("Binary Digest   : %s\n", binaryDigest)
+	}
 	fmt.Printf("Authority       : %s\n", *authority)
 	if *authorityID != "" {
 		fmt.Printf("Authority ID    : %s\n", *authorityID)
@@ -354,4 +424,84 @@ func handleSignRelease(args []string) {
 	}
 	fmt.Println("\nRelease Signature Token (pass via ldflags or release.sig):")
 	fmt.Println(token)
+}
+
+func handleVerifyRelease(args []string) {
+	fs := flag.NewFlagSet("verify-release", flag.ExitOnError)
+	tokenFlag := fs.String("token", "", "Release token string or armored PEM")
+	fileFlag := fs.String("file", "", "Path to release token file")
+	fileFlagShort := fs.String("f", "", "Alias for --file")
+	pubKeyFlag := fs.String("public-key", "", "Base64-encoded Ed25519 public key")
+	pubKeyFile := fs.String("public-key-file", "", "Path to file containing public key")
+
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	filePath := *fileFlag
+	if filePath == "" {
+		filePath = *fileFlagShort
+	}
+
+	token := strings.TrimSpace(*tokenFlag)
+	if token == "" && filePath != "" {
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading release token file %s: %v\n", filePath, err)
+			os.Exit(1)
+		}
+		token = strings.TrimSpace(string(content))
+	}
+	if token == "" {
+		fmt.Fprintln(os.Stderr, "Error: please provide --token or --file")
+		os.Exit(1)
+	}
+
+	var pubKey ed25519.PublicKey
+	pubKeyStr := strings.TrimSpace(*pubKeyFlag)
+	if pubKeyStr == "" && *pubKeyFile != "" {
+		content, err := os.ReadFile(*pubKeyFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading public key file %s: %v\n", *pubKeyFile, err)
+			os.Exit(1)
+		}
+		pubKeyStr = strings.TrimSpace(string(content))
+	}
+	if pubKeyStr != "" {
+		keyBytes, err := base64.StdEncoding.DecodeString(pubKeyStr)
+		if err != nil {
+			keyBytes, err = base64.RawURLEncoding.DecodeString(pubKeyStr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error decoding base64 public key: %v\n", err)
+				os.Exit(1)
+			}
+		}
+		if len(keyBytes) != ed25519.PublicKeySize {
+			fmt.Fprintf(os.Stderr, "Error: invalid public key size (%d bytes, expected %d)\n", len(keyBytes), ed25519.PublicKeySize)
+			os.Exit(1)
+		}
+		pubKey = ed25519.PublicKey(keyBytes)
+	}
+
+	claims, err := version.ParseAndVerifyReleaseToken(token, pubKey)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Release verification failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("Official DIVMORA Release Attestation Verified!")
+	fmt.Printf("  Product:          %s\n", claims.Product)
+	fmt.Printf("  Version:          %s\n", claims.Version)
+	fmt.Printf("  Git Commit:       %s\n", claims.GitCommit)
+	fmt.Printf("  Build Date:       %s\n", claims.BuildDate)
+	if claims.ReleaseDate != "" && claims.ReleaseDate != claims.BuildDate {
+		fmt.Printf("  Release Date:     %s\n", claims.ReleaseDate)
+	}
+	if claims.BinaryDigest != "" {
+		fmt.Printf("  Binary Digest:    %s\n", claims.BinaryDigest)
+	}
+	fmt.Printf("  Authority:        %s\n", claims.Authority)
+	if claims.AuthorityID != "" {
+		fmt.Printf("  Authority ID:     %s\n", claims.AuthorityID)
+	}
 }

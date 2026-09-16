@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambdacontext"
+	liblicense "github.com/divmora/license-go/pkg/license"
 	"github.com/divmora/otel-aws-log-processor/pkg/model"
 	"github.com/divmora/otel-aws-log-processor/pkg/version"
 )
@@ -88,21 +90,14 @@ func ResolveToken(key, file string) (string, error) {
 		return strings.TrimSpace(string(content)), nil
 	}
 
-	envKey := strings.TrimSpace(os.Getenv("DIVMORA_LICENSE_KEY"))
-	if envKey != "" {
-		return envKey, nil
-	}
-
-	envFile := strings.TrimSpace(os.Getenv("DIVMORA_LICENSE_FILE"))
-	if envFile != "" {
-		content, err := os.ReadFile(envFile)
-		if err != nil {
-			return "", fmt.Errorf("failed to read license file from DIVMORA_LICENSE_FILE (%s): %w", envFile, err)
+	token, err := liblicense.ResolveToken()
+	if err != nil {
+		if errors.Is(err, liblicense.ErrLicenseNotFound) {
+			return "", nil
 		}
-		return strings.TrimSpace(string(content)), nil
+		return "", err
 	}
-
-	return "", nil
+	return strings.TrimSpace(token), nil
 }
 
 // EnforcementOptions encapsulates the operational parameters required to evaluate
@@ -150,7 +145,8 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 
 	// 0. BSL 1.1 Change Date Check (Apache 2.0 conversion after 3 years)
 	vInfo := version.Get()
-	if vInfo.IsApacheConverted(evalTime) {
+	bslPolicy := GetBSLPolicy()
+	if bslPolicy.IsConverted(evalTime) || vInfo.IsApacheConverted(evalTime) {
 		changeDate, _ := vInfo.ChangeDate()
 		return &ValidationStatus{
 			Valid:        true,
@@ -166,6 +162,14 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 	}
 
 	isNonProd := IsNonProductionEnvironment(env)
+	usageReq := liblicense.BSLUsageRequest{
+		Environment: env,
+		Time:        evalTime,
+		Metadata: map[string]string{
+			"bucket": opts.BucketName,
+		},
+	}
+	entitlement := bslPolicy.EvaluateEntitlement(usageReq)
 
 	// Resolve enforcement mode ("warn" default vs "strict")
 	mode := strings.ToLower(strings.TrimSpace(opts.EnforcementMode))
@@ -177,7 +181,7 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 	}
 
 	// 2. Non-Production Exemption Path
-	if isNonProd {
+	if isNonProd || entitlement.Authorized {
 		// Heuristic check: Bucket name matches production keywords
 		if opts.BucketName != "" {
 			lowerBucket := strings.ToLower(opts.BucketName)
@@ -283,7 +287,7 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 	// Verify Caller AWS Account ID against AllowedAWSAccounts
 	if callerAccount != "" && !status.Claims.IsAccountAllowed(callerAccount) {
 		mismatchMsg := fmt.Sprintf("COMMERCIAL LICENSE ACCOUNT MISMATCH: License is restricted to AWS accounts %v, but active Lambda caller account is '%s'",
-			status.Claims.AllowedAWSAccounts, callerAccount)
+			GetAllowedAccounts(status.Claims), callerAccount)
 		slog.Warn(mismatchMsg, "contact", "licensing@divmora.com")
 		status.Valid = false
 		status.StatusReason = "account_mismatch"
@@ -299,7 +303,7 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 	for _, srcAccount := range opts.SourceAccountIDs {
 		if srcAccount != "" && !status.Claims.IsAccountAllowed(srcAccount) {
 			mismatchMsg := fmt.Sprintf("COMMERCIAL LICENSE SOURCE ACCOUNT MISMATCH: License is restricted to AWS accounts %v, but traffic source log record originates from account '%s'",
-				status.Claims.AllowedAWSAccounts, srcAccount)
+				GetAllowedAccounts(status.Claims), srcAccount)
 			slog.Warn(mismatchMsg, "contact", "licensing@divmora.com")
 			status.Valid = false
 			status.StatusReason = "source_account_mismatch"
@@ -322,7 +326,7 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 		)
 	} else {
 		slog.Info("Commercial license verified and active",
-			"tier", status.Claims.Tier,
+			"tier", GetClaimsPlan(status.Claims),
 			"customer", status.Claims.Customer.Name,
 			"days_remaining", status.DaysRemaining,
 		)
@@ -342,7 +346,7 @@ func AppendLicenseAttributes(attrs []model.OTelAttribute, status *ValidationStat
 	tier := "none"
 	licenseID := "unlicensed"
 	if status.Claims != nil {
-		tier = status.Claims.Tier
+		tier = GetClaimsPlan(status.Claims)
 		licenseID = status.Claims.ID
 	} else if IsNonProductionEnvironment(env) {
 		tier = "non-production"
@@ -403,5 +407,30 @@ func EmitCloudWatchEMF(status *ValidationStatus, env string, recordsProcessed in
 	if err == nil {
 		// Write directly to stdout for CloudWatch ingestion
 		fmt.Println(string(bytes))
+	}
+}
+
+// GetBSLPolicy returns the canonical BSL 1.1 licensing policy for otel-aws-log-processor,
+// including autonomous Apache 2.0 Change Date conversion and Additional Use Grants.
+func GetBSLPolicy() liblicense.BSLPolicy {
+	vInfo := version.Get()
+	var releaseDate time.Time
+	// Layer 3: Only certified, officially attested releases convert to open source upon Change Date.
+	// Unattested builds maintain ReleaseDate as zero so they do not convert based on self-reported timestamps.
+	if vInfo.Provenance.Verified {
+		if relTime, ok := vInfo.ReleaseTime(); ok {
+			releaseDate = relTime
+		}
+	}
+
+	nonProdGrant := liblicense.NewNonProductionGrant("Non-Production Exemption")
+
+	return liblicense.BSLPolicy{
+		Product:           "otel-aws-log-processor",
+		ReleaseDate:       releaseDate,
+		ChangePeriodYears: 3,
+		AdditionalUseGrants: []liblicense.BSLAdditionalUseGrant{
+			nonProdGrant,
+		},
 	}
 }
