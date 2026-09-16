@@ -168,7 +168,7 @@ Production-ready AWS CloudFormation templates with automated SQS Ingestion Queue
 ## Development & Building
 
 ### Prerequisites
-- **Go 1.25+**: [golang.org](https://golang.org/dl/)
+- **Go 1.26+**: [golang.org](https://golang.org/dl/)
 - **Make**: Build automation
 - **Docker**: Containerization and multi-arch builds
 

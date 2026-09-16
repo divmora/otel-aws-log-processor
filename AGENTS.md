@@ -55,7 +55,7 @@ otel-aws-log-processor/
 ## 🛠️ Development & Tooling Commands
 
 ### Prerequisites
-- Go 1.25+
+- Go 1.26+
 - Make
 
 ### Common Make Commands

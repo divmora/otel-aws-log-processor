@@ -17,7 +17,7 @@ This project adheres to the Contributor Covenant [Code of Conduct](CODE_OF_CONDU
 ### Prerequisites
 
 Ensure you have the following installed on your development machine:
-- **Go 1.25+**: [golang.org](https://golang.org/dl/)
+- **Go 1.26+**: [golang.org](https://golang.org/dl/)
 - **Make**: Standard build tool
 - **Docker**: For container image verification
 - **golangci-lint**: [golangci-lint.run](https://golangci-lint.run/)
