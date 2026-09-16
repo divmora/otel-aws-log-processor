@@ -288,7 +288,7 @@ func TestEvaluateProvenance_ProductMismatch(t *testing.T) {
 	assert.Contains(t, info.Provenance.Error, "Product mismatch")
 }
 
-func TestEvaluateProvenance_LegacyTwoPartToken(t *testing.T) {
+func TestEvaluateProvenance_RejectLegacyTwoPartToken(t *testing.T) {
 	pub, priv := generateTestReleaseKeyPair(t)
 	version.SetReleaseVerificationPublicKey(pub)
 	defer version.ResetReleaseVerificationPublicKey()
@@ -308,8 +308,8 @@ func TestEvaluateProvenance_LegacyTwoPartToken(t *testing.T) {
 	version.GitCommit = "c0ffee"
 	version.BuildDate = "2026-09-12T12:00:00Z"
 
-	// Manually construct legacy 2-part token (<payloadB64>.<sigB64>)
-	legacyPayload := `{"version":"0.2.0","git_commit":"c0ffee","build_date":"2026-09-12T12:00:00Z","authority":"DIVMORA Technologies"}`
+	// Construct legacy un-prefixed 2-part token (<payloadB64>.<sigB64>)
+	legacyPayload := `{"product":"otel-aws-log-processor","version":"0.2.0","git_commit":"c0ffee","build_date":"2026-09-12T12:00:00Z","authority":"DIVMORA Technologies"}`
 	sig := ed25519.Sign(priv, []byte(legacyPayload))
 	payloadB64 := base64.RawURLEncoding.EncodeToString([]byte(legacyPayload))
 	sigB64 := base64.RawURLEncoding.EncodeToString(sig)
@@ -318,7 +318,7 @@ func TestEvaluateProvenance_LegacyTwoPartToken(t *testing.T) {
 	version.ReleaseSignature = legacyToken
 
 	info := version.Get()
-	assert.True(t, info.Provenance.Verified)
-	assert.Equal(t, version.ProvenanceVerifiedOfficial, info.Provenance.Status)
-	assert.Equal(t, "DIVMORA Technologies", info.Provenance.Authority)
+	assert.False(t, info.Provenance.Verified)
+	assert.Equal(t, version.ProvenanceTamperedSignature, info.Provenance.Status)
+	assert.Contains(t, info.Provenance.Error, "malformed release token: expected canonical DIVREL1 compact token or armored PEM block")
 }

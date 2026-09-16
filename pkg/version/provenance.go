@@ -3,7 +3,6 @@ package version
 import (
 	"crypto/ed25519"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -199,7 +198,7 @@ func SignReleaseArmored(claims *ReleaseClaims, privKey ed25519.PrivateKey) (stri
 }
 
 // ParseAndVerifyReleaseToken decodes, parses, and cryptographically verifies an Ed25519 signed release token.
-// It supports canonical DIVREL1 compact tokens, armored PEM blocks, and legacy 2-part tokens.
+// It strictly requires canonical DIVREL1 compact tokens ("DIVREL1.<payload>.<sig>") or armored PEM blocks.
 // If pubKey is nil or empty, GetReleaseVerificationPublicKey() is used.
 func ParseAndVerifyReleaseToken(token string, pubKey ed25519.PublicKey) (*ReleaseClaims, error) {
 	token = strings.TrimSpace(token)
@@ -215,69 +214,33 @@ func ParseAndVerifyReleaseToken(token string, pubKey ed25519.PublicKey) (*Releas
 		}
 	}
 
-	// 1. Canonical DIVREL1 or armored PEM block
-	if strings.HasPrefix(token, liblicense.ProtocolPrefixRelease+".") || strings.HasPrefix(token, "-----BEGIN") {
-		ring := liblicense.NewKeyRing(pubKey)
-		libClaims, _, err := liblicense.VerifyRelease(token, ring)
-		if err != nil {
-			return nil, err
-		}
-		buildDateStr := ""
-		if !libClaims.BuildDate.IsZero() {
-			buildDateStr = libClaims.BuildDate.UTC().Format(time.RFC3339)
-		}
-		releaseDateStr := ""
-		if !libClaims.ReleaseDate.IsZero() {
-			releaseDateStr = libClaims.ReleaseDate.UTC().Format(time.RFC3339)
-		}
-		return &ReleaseClaims{
-			Product:      libClaims.Product,
-			Version:      libClaims.Version,
-			GitCommit:    libClaims.GitCommit,
-			BuildDate:    buildDateStr,
-			ReleaseDate:  releaseDateStr,
-			BinaryDigest: libClaims.BinaryDigest,
-			Authority:    libClaims.Authority,
-			AuthorityID:  libClaims.KeyID,
-		}, nil
+	if !strings.HasPrefix(token, liblicense.ProtocolPrefixRelease+".") && !strings.HasPrefix(token, "-----BEGIN") {
+		return nil, errors.New("malformed release token: expected canonical DIVREL1 compact token or armored PEM block")
 	}
 
-	// 2. Legacy 2-part token (<payload>.<signature>)
-	parts := strings.Split(token, ".")
-	if len(parts) != 2 {
-		return nil, errors.New("malformed release token: expected format 'DIVREL1.<payload>.<sig>' or '<payload>.<signature>'")
-	}
-
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	ring := liblicense.NewKeyRing(pubKey)
+	libClaims, _, err := liblicense.VerifyRelease(token, ring)
 	if err != nil {
-		payloadBytes, err = base64.StdEncoding.DecodeString(parts[0])
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode release payload: %w", err)
-		}
+		return nil, err
 	}
-
-	sigBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		sigBytes, err = base64.StdEncoding.DecodeString(parts[1])
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode release signature: %w", err)
-		}
+	buildDateStr := ""
+	if !libClaims.BuildDate.IsZero() {
+		buildDateStr = libClaims.BuildDate.UTC().Format(time.RFC3339)
 	}
-
-	if len(sigBytes) != ed25519.SignatureSize {
-		return nil, fmt.Errorf("invalid release signature size: expected %d bytes, got %d", ed25519.SignatureSize, len(sigBytes))
+	releaseDateStr := ""
+	if !libClaims.ReleaseDate.IsZero() {
+		releaseDateStr = libClaims.ReleaseDate.UTC().Format(time.RFC3339)
 	}
-
-	if !ed25519.Verify(pubKey, payloadBytes, sigBytes) {
-		return nil, errors.New("cryptographic signature verification failed: signature does not match public key")
-	}
-
-	var claims ReleaseClaims
-	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
-		return nil, fmt.Errorf("failed to deserialize release claims: %w", err)
-	}
-
-	return &claims, nil
+	return &ReleaseClaims{
+		Product:      libClaims.Product,
+		Version:      libClaims.Version,
+		GitCommit:    libClaims.GitCommit,
+		BuildDate:    buildDateStr,
+		ReleaseDate:  releaseDateStr,
+		BinaryDigest: libClaims.BinaryDigest,
+		Authority:    libClaims.Authority,
+		AuthorityID:  libClaims.KeyID,
+	}, nil
 }
 
 // ResolveReleaseSignature resolves the cryptographic release token from:

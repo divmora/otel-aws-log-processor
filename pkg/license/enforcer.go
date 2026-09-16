@@ -17,12 +17,8 @@ import (
 	"github.com/divmora/otel-aws-log-processor/pkg/version"
 )
 
-// Non-production environment identifiers.
-var nonProdAllowlist = []string{
-	"development", "dev", "staging", "stage",
-	"test", "testing", "qa", "sandbox", "poc",
-	"preview", "local", "ci",
-}
+// Extra non-production environments supplementing liblicense.DefaultNonProductionEnvironments.
+var extraNonProdEnvironments = []string{"preview", "poc"}
 
 // Production environment identifiers.
 var prodKeywords = []string{
@@ -30,14 +26,11 @@ var prodKeywords = []string{
 }
 
 // IsNonProductionEnvironment returns true if the normalized environment string indicates non-production.
+// It evaluates compliance using liblicense's standard Non-Production Additional Use Grant terms.
 func IsNonProductionEnvironment(env string) bool {
-	norm := strings.ToLower(strings.TrimSpace(env))
-	for _, np := range nonProdAllowlist {
-		if norm == np {
-			return true
-		}
-	}
-	return false
+	grant := liblicense.NewNonProductionGrant("Non-Production Exemption", append(liblicense.DefaultNonProductionEnvironments, extraNonProdEnvironments...)...)
+	eval := grant.Evaluate(liblicense.BSLUsageRequest{Environment: env})
+	return eval.Matched
 }
 
 // DetectEnvironment determines the active environment tier from standard variables.
@@ -423,7 +416,7 @@ func GetBSLPolicy() liblicense.BSLPolicy {
 		}
 	}
 
-	nonProdGrant := liblicense.NewNonProductionGrant("Non-Production Exemption")
+	nonProdGrant := liblicense.NewNonProductionGrant("Non-Production Exemption", append(liblicense.DefaultNonProductionEnvironments, extraNonProdEnvironments...)...)
 
 	return liblicense.BSLPolicy{
 		Product:           "otel-aws-log-processor",

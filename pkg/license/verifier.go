@@ -90,13 +90,19 @@ func ParseAndVerifyAt(token string, pubKey ed25519.PublicKey, evalTime time.Time
 		validatorOpts = append(validatorOpts, liblicense.WithBuildDate(releaseTime))
 	}
 
+	if evalTime.IsZero() {
+		evalTime = time.Now().UTC()
+	}
+
+	// 3. Server Time / Clock Skew Defense via liblicense:
+	validatorOpts = append(validatorOpts,
+		liblicense.WithAuthoritativeTime(evalTime),
+		liblicense.WithMaxClockDrift(15*time.Minute),
+	)
+
 	validator, err := liblicense.NewValidatorWithKeyRing(keyRing, validatorOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize license validator: %w", err)
-	}
-
-	if evalTime.IsZero() {
-		evalTime = time.Now().UTC()
 	}
 
 	res, err := validator.VerifyWithResultAt(token, evalTime)

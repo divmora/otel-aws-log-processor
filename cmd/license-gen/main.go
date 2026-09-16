@@ -25,15 +25,21 @@ func main() {
 	subcommand := os.Args[1]
 	switch subcommand {
 	case "keygen":
-		handleKeygen()
+		handleKeygen(os.Args[2:])
 	case "generate":
 		handleGenerate(os.Args[2:])
+	case "status":
+		handleStatus(os.Args[2:])
+	case "bsl-eval":
+		handleBSLEval(os.Args[2:])
 	case "inspect":
 		handleInspect(os.Args[2:])
 	case "sign-release":
 		handleSignRelease(os.Args[2:])
 	case "verify-release":
 		handleVerifyRelease(os.Args[2:])
+	case "inspect-release":
+		handleInspectRelease(os.Args[2:])
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -44,21 +50,24 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Println(`DIVMORA License Generator CLI (license-gen)
+	fmt.Println(`DIVMORA License Generator & Verifier CLI (license-gen)
 
 Usage:
   license-gen <command> [flags]
 
 Commands:
-  keygen          Generate a new Ed25519 cryptographic key pair
+  keygen          Generate a new Ed25519 cryptographic key pair (base64 and/or PEM files)
   generate        Mint and sign a new commercial license token
-  inspect         Decode and inspect a signed license token
+  status          Display standardized terminal license status card and quota table
+  bsl-eval        Evaluate BSL 1.1 dual-licensing entitlement and Additional Use Grants
+  inspect         Decode and inspect license claims without verification
   sign-release    Cryptographically sign official release metadata for binary provenance
   verify-release  Cryptographically verify an official release attestation token
+  inspect-release Decode and inspect release attestation claims without verification
 
 Examples:
-  # Generate a keypair
-  license-gen keygen
+  # Generate a keypair and save as PEM files
+  license-gen keygen --pub-file=public.pem --priv-file=private.pem
 
   # Generate a 1-year enterprise license for AWS account 123456789012
   license-gen generate \
@@ -69,8 +78,11 @@ Examples:
     --duration-days=365 \
     --private-key="<base64-private-key>"
 
-  # Inspect a token
-  license-gen inspect --token="<token>"
+  # Display license status card
+  license-gen status --token="<token>"
+
+  # Evaluate BSL 1.1 entitlement for staging environment
+  license-gen bsl-eval --env="staging"
 
   # Sign an official release
   license-gen sign-release \
@@ -78,10 +90,21 @@ Examples:
     --commit="abcdef123456" \
     --build-date="2026-09-12T12:00:00Z" \
     --private-key="<base64-private-key>" \
-    --out-file="release.sig"`)
+    --out-file="release.sig"
+
+  # Inspect an attestation token offline
+  license-gen inspect-release --file="release.sig"`)
 }
 
-func handleKeygen() {
+func handleKeygen(args []string) {
+	fs := flag.NewFlagSet("keygen", flag.ExitOnError)
+	pubFile := fs.String("pub-file", "", "Optional path to write public key in PEM format")
+	privFile := fs.String("priv-file", "", "Optional path to write private key in PEM format")
+
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
 	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to generate keypair: %v\n", err)
@@ -91,9 +114,28 @@ func handleKeygen() {
 	pubB64 := base64.StdEncoding.EncodeToString(pubKey)
 	privB64 := base64.StdEncoding.EncodeToString(privKey)
 
+	if *privFile != "" {
+		if err := liblicense.SavePrivateKeyToPEMFile(privKey, *privFile, 0600); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to save private key to %s: %v\n", *privFile, err)
+			os.Exit(1)
+		}
+	}
+	if *pubFile != "" {
+		if err := liblicense.SavePublicKeyToPEMFile(pubKey, *pubFile, 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to save public key to %s: %v\n", *pubFile, err)
+			os.Exit(1)
+		}
+	}
+
 	fmt.Println("Generated Ed25519 Key Pair:")
 	fmt.Printf("  Public Verification Key (embed in code or DIVMORA_PUBLIC_KEY):\n    %s\n\n", pubB64)
 	fmt.Printf("  Private Signing Key (keep secret!):\n    %s\n", privB64)
+	if *pubFile != "" {
+		fmt.Printf("  Saved Public Key PEM : %s\n", *pubFile)
+	}
+	if *privFile != "" {
+		fmt.Printf("  Saved Private Key PEM: %s\n", *privFile)
+	}
 }
 
 func handleGenerate(args []string) {
@@ -221,6 +263,7 @@ func handleInspect(args []string) {
 	fs := flag.NewFlagSet("inspect", flag.ExitOnError)
 	tokenFlag := fs.String("token", "", "License token string")
 	fileFlag := fs.String("file", "", "Path to license token file")
+	jsonFlag := fs.Bool("json", false, "Output claims in JSON format")
 
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
@@ -236,21 +279,235 @@ func handleInspect(args []string) {
 		os.Exit(1)
 	}
 
-	status, err := license.ParseAndVerify(token, nil)
+	claims, err := liblicense.Inspect(token)
 	if err != nil {
-		fmt.Printf("Validation Warning: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to inspect license claims: %v\n", err)
+		os.Exit(1)
 	}
 
-	if status != nil && status.Claims != nil {
-		claimsJSON, _ := json.MarshalIndent(status.Claims, "", "  ")
-		fmt.Printf("Status:        %s\n", status.StatusReason)
-		fmt.Printf("Valid:         %t\n", status.Valid)
-		fmt.Printf("Grace Period:  %t\n", status.InGracePeriod)
-		fmt.Printf("Days Remaining:%d\n", status.DaysRemaining)
-		fmt.Printf("Message:       %s\n\n", status.Message)
-		fmt.Println("Decoded Claims:")
+	if *jsonFlag {
+		claimsJSON, _ := json.MarshalIndent(claims, "", "  ")
 		fmt.Println(string(claimsJSON))
+		return
 	}
+
+	fmt.Print(claims.FormatStatus())
+}
+
+func handleStatus(args []string) {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	tokenFlag := fs.String("token", "", "License token string")
+	fileFlag := fs.String("file", "", "Path to license token file")
+	compactFlag := fs.Bool("compact", false, "Compact terminal card format")
+	jsonFlag := fs.Bool("json", false, "Output status in JSON format")
+	timeFlag := fs.String("time", "", "Reference evaluation timestamp (RFC3339 or YYYY-MM-DD)")
+
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	evalTime := time.Now().UTC()
+	if *timeFlag != "" {
+		t, err := time.Parse(time.RFC3339, *timeFlag)
+		if err != nil {
+			t, err = time.Parse("2006-01-02", *timeFlag)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid --time format: %v\n", err)
+			os.Exit(1)
+		}
+		evalTime = t.UTC()
+	}
+
+	token, err := license.ResolveToken(*tokenFlag, *fileFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error resolving license: %v\n", err)
+		os.Exit(1)
+	}
+
+	vInfo := version.Get()
+	if token == "" {
+		bslPolicy := license.GetBSLPolicy()
+		changeDate := bslPolicy.ChangeDate()
+		isConverted := bslPolicy.IsConverted(evalTime)
+
+		if *jsonFlag {
+			out := map[string]any{
+				"status":             "active",
+				"tier":               "community",
+				"license":            bslPolicy.EffectiveLicense(evalTime),
+				"apache_converted":   isConverted,
+				"change_date":        changeDate.Format("2006-01-02"),
+				"days_to_conversion": bslPolicy.DaysUntilConversion(evalTime),
+				"message":            "Running under BSL 1.1 Non-Production Free Exemption",
+			}
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(out)
+			return
+		}
+
+		fmt.Println("================================================================================")
+		fmt.Println("OTel AWS Log Processor License Status")
+		fmt.Println("================================================================================")
+		fmt.Printf("Active License   : %s\n", bslPolicy.EffectiveLicense(evalTime))
+		fmt.Printf("Software Version : %s\n", vInfo.Version)
+		if relTime, ok := vInfo.ReleaseTime(); ok {
+			fmt.Printf("Release Date     : %s\n", relTime.Format("2006-01-02"))
+		}
+		fmt.Printf("Change Date      : %s (Converts to Apache License 2.0)\n", changeDate.Format("2006-01-02"))
+		fmt.Printf("Days to Convert  : %d days\n", bslPolicy.DaysUntilConversion(evalTime))
+		fmt.Println("Non-Production   : Free & unrestricted (dev, staging, QA, CI/CD)")
+		fmt.Println("Production       : Commercial subscription required for production workloads")
+		fmt.Println("================================================================================")
+		fmt.Println("\nTo configure a commercial license:")
+		fmt.Println("  export DIVMORA_LICENSE_KEY=\"<token>\"")
+		fmt.Println("  or visit https://divmora.com / contact licensing@divmora.com")
+		return
+	}
+
+	status, err := license.ParseAndVerifyAt(token, nil, evalTime)
+	if err != nil {
+		if *jsonFlag {
+			out := map[string]any{
+				"valid":   false,
+				"status":  "invalid",
+				"error":   err.Error(),
+				"message": "Cryptographic license verification failed",
+			}
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(out)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "License Verification Failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *jsonFlag {
+		out := map[string]any{
+			"valid":           status.Valid,
+			"status":          status.StatusReason,
+			"in_grace_period": status.InGracePeriod,
+			"days_remaining":  status.DaysRemaining,
+			"message":         status.Message,
+			"claims":          status.Claims,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(out)
+		return
+	}
+
+	formatOpts := []liblicense.StatusFormatterOption{
+		liblicense.WithStatusBannerTitle("OTEL AWS LOG PROCESSOR COMMERCIAL LICENSE"),
+		liblicense.WithStatusCompact(*compactFlag),
+		liblicense.WithStatusTime(evalTime),
+	}
+	fmt.Print(status.Claims.FormatStatus(formatOpts...))
+}
+
+func handleBSLEval(args []string) {
+	fs := flag.NewFlagSet("bsl-eval", flag.ExitOnError)
+	envFlag := fs.String("env", "production", "Environment name to evaluate (e.g. production, staging, dev)")
+	bucketFlag := fs.String("bucket", "", "Optional S3 bucket name")
+	timeFlag := fs.String("time", "", "Reference evaluation timestamp (RFC3339 or YYYY-MM-DD)")
+	jsonFlag := fs.Bool("json", false, "Output in JSON format")
+
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	evalTime := time.Now().UTC()
+	if *timeFlag != "" {
+		t, err := time.Parse(time.RFC3339, *timeFlag)
+		if err != nil {
+			t, err = time.Parse("2006-01-02", *timeFlag)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid --time format: %v\n", err)
+			os.Exit(1)
+		}
+		evalTime = t.UTC()
+	}
+
+	policy := license.GetBSLPolicy()
+	usageReq := liblicense.BSLUsageRequest{
+		Environment: *envFlag,
+		Time:        evalTime,
+		Metadata: map[string]string{
+			"bucket": *bucketFlag,
+		},
+	}
+
+	result := policy.EvaluateEntitlement(usageReq)
+
+	if *jsonFlag {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(result)
+		return
+	}
+
+	fmt.Println("================================================================================")
+	fmt.Println("DIVMORA BSL 1.1 Entitlement Evaluation")
+	fmt.Println("================================================================================")
+	fmt.Printf("Product          : %s\n", policy.Product)
+	fmt.Printf("Environment      : %s\n", *envFlag)
+	fmt.Printf("Evaluation Time  : %s\n", evalTime.Format(time.RFC3339))
+	fmt.Printf("Effective License: %s\n", result.EffectiveLicense)
+	fmt.Printf("Authorized       : %t\n", result.Authorized)
+	if result.MatchingGrant != "" {
+		fmt.Printf("Matching Grant   : %s\n", result.MatchingGrant)
+	}
+	fmt.Printf("Decision         : %s\n", result.GrantType)
+	fmt.Printf("Change Date      : %s\n", result.ChangeDate.Format("2006-01-02"))
+	fmt.Printf("Days to Convert  : %d days\n", result.DaysUntilConversion)
+	fmt.Printf("Reason           : %s\n", result.Reason)
+	fmt.Println("================================================================================")
+}
+
+func handleInspectRelease(args []string) {
+	fs := flag.NewFlagSet("inspect-release", flag.ExitOnError)
+	tokenFlag := fs.String("token", "", "Release token string or armored PEM")
+	fileFlag := fs.String("file", "", "Path to release token file")
+	fileFlagShort := fs.String("f", "", "Alias for --file")
+	jsonFlag := fs.Bool("json", false, "Output claims in JSON format")
+
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	filePath := *fileFlag
+	if filePath == "" {
+		filePath = *fileFlagShort
+	}
+
+	token := strings.TrimSpace(*tokenFlag)
+	var claims *liblicense.ReleaseClaims
+	var err error
+
+	if token == "" && filePath != "" {
+		claims, err = liblicense.InspectReleaseFromFile(filePath)
+	} else if token != "" {
+		claims, err = liblicense.InspectRelease(token)
+	} else {
+		fmt.Fprintln(os.Stderr, "Error: please provide --token or --file")
+		os.Exit(1)
+	}
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to inspect release claims: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *jsonFlag {
+		claimsJSON, _ := json.MarshalIndent(claims, "", "  ")
+		fmt.Println(string(claimsJSON))
+		return
+	}
+
+	fmt.Print(claims.FormatInspect())
 }
 
 func resolvePrivateKey(inlineKey, keyFile string) ([]byte, error) {
