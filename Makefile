@@ -1,4 +1,4 @@
-.PHONY: build build-license-gen clean test test-coverage dev-setup fmt lint lambda-package docker-build docker-build-multiarch docs-serve help
+.PHONY: build clean test test-coverage dev-setup fmt lint lambda-package docker-build docker-build-multiarch docs-serve help
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
@@ -14,24 +14,12 @@ ifneq ($(strip $(RELEASE_SIG)),none)
 LDFLAGS += -X github.com/divmora/otel-aws-log-processor/pkg/version.ReleaseSignature=$(RELEASE_SIG)
 endif
 
-# Build all binaries to bin/
+# Build Lambda binary to bin/
 build:
-	@echo "Building binaries to bin/..."
+	@echo "Building Lambda binary to bin/..."
 	@mkdir -p bin
-	@go build -ldflags="$(LDFLAGS)" -o bin/otel-aws-log-processor ./cmd/lambda
-	@go build -ldflags="$(LDFLAGS)" -o bin/license-gen ./cmd/license-gen
-	@echo "✓ Build complete! Binaries in ./bin/"
-
-# Build license generator CLI
-build-license-gen:
-	@echo "Building license-gen CLI..."
-	@mkdir -p bin
-	@go build -ldflags="$(LDFLAGS)" -o bin/license-gen ./cmd/license-gen
-	@echo "✓ license-gen built in ./bin/license-gen"
-
-# Sign release metadata for binary provenance
-sign-release: build-license-gen
-	@bin/license-gen sign-release --version=$(VERSION) --commit=$(COMMIT) --build-date=$(DATE) --out-file=release.sig
+	@go build -ldflags="$(LDFLAGS)" -o bin/bootstrap ./cmd/lambda
+	@echo "✓ Build complete! Binary in ./bin/bootstrap"
 
 # Clean build artifacts
 clean:
@@ -98,7 +86,7 @@ docs-serve:
 
 help:
 	@echo "Available targets:"
-	@echo "  make build                  - Build all binaries to bin/"
+	@echo "  make build                  - Build Lambda binary to bin/"
 	@echo "  make clean                  - Remove build artifacts"
 	@echo "  make test                   - Run unit tests"
 	@echo "  make test-coverage          - Run unit tests with coverage profile"
