@@ -222,12 +222,13 @@ This project is licensed under the **Business Source License 1.1 (BSL 1.1)** - s
 
 ### Supplying a Commercial License
 
-Set your cryptographic license token via environment variable in your Lambda deployment or Terraform module:
+For container and serverless AWS Lambda deployments, supply your cryptographic license token via the `DIVMORA_LICENSE_KEY` environment variable in your Lambda function configuration or Terraform module:
 
 ```bash
 export DIVMORA_LICENSE_KEY="DIV1.<payload>.<signature>"
 ```
 
+Alternatively, mount a license file and point to its location using `DIVMORA_LICENSE_FILE=/path/to/license.key`.
 
 ### Production Enforcement Modes
 
@@ -236,23 +237,22 @@ export DIVMORA_LICENSE_KEY="DIV1.<payload>.<signature>"
 | `DIVMORA_LICENSE_MODE=warn` *(Default)* | Emits structured warnings and stamps `divmora.license.status=unlicensed_production_alert` in OTel telemetry and CloudWatch EMF without dropping logs or disrupting production pipelines. |
 | `DIVMORA_LICENSE_MODE=strict` | Strictly enforces licensing compliance, rejecting invocations if unverified or expired past the 14-day grace period. |
 
-### Minting Commercial Licenses (Admins)
+### Managing & Inspecting Licenses (`license-cli`)
 
-DIVMORA administrators use the included `license-gen` utility to issue and inspect signed tokens:
+Install the official DIVMORA licensing toolkit CLI:
 
 ```bash
-# Build the generator CLI
-make build-license-gen
+go install github.com/divmora/license-go/cmd/license-cli@v1.0.0
+```
 
-# Mint a 1-year enterprise license for specific AWS accounts
-./bin/license-gen generate \
-  --customer="Customer Name" \
-  --accounts="123456789012,987654321098" \
-  --tier="enterprise" \
-  --private-key="<ed25519-private-key>"
+Inspect and verify license tokens and quotas:
 
-# Inspect an existing license token
-./bin/license-gen inspect --token="<token>"
+```bash
+# Inspect commercial license claims:
+license-cli inspect -license /path/to/license.key
+
+# Check license status & quota consumption:
+license-cli status -license /path/to/license.key -usage "max_streams=5"
 ```
 
 For enterprise licensing, custom SLAs, and commercial inquiries, please contact **[licensing@divmora.com](mailto:licensing@divmora.com)** or visit **[divmora.com](https://divmora.com)**.
