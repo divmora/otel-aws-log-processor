@@ -12,11 +12,13 @@ const DefaultPublicKeyBase64 = "o5nIs/8K/bCGz6jRB33Ig1h0ONr37yvVHpddzNnL46U="
 // SetVerificationPublicKey overrides the active verification key (primarily used in automated tests).
 func SetVerificationPublicKey(key ed25519.PublicKey) {
 	liblicense.SetVerificationPublicKey(key)
+	ResetDefaultValidator()
 }
 
 // ResetVerificationPublicKey clears any programmatic override and returns to default resolution.
 func ResetVerificationPublicKey() {
 	liblicense.ResetVerificationPublicKey()
+	ResetDefaultValidator()
 }
 
 // GetVerificationKeyRing resolves the KeyRing containing trusted public verification keys.

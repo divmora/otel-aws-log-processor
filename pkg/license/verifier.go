@@ -6,105 +6,139 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	liblicense "github.com/divmora/license-go/pkg/license"
 	"github.com/divmora/otel-aws-log-processor/pkg/version"
 )
 
-// SignLicense serializes and cryptographically signs a set of Claims using an Ed25519 private key,
-// returning a canonical DIV1 compact token string ("DIV1.<payload>.<sig>").
-func SignLicense(claims *Claims, privKey ed25519.PrivateKey) (string, error) {
-	if claims == nil {
-		return "", errors.New("cannot sign nil license claims")
-	}
-	if len(privKey) != ed25519.PrivateKeySize {
-		return "", fmt.Errorf("invalid Ed25519 private key size: expected %d bytes, got %d", ed25519.PrivateKeySize, len(privKey))
-	}
+var (
+	validatorMu      sync.RWMutex
+	defaultValidator *liblicense.Validator
+)
 
-	signer, err := liblicense.NewSigner(privKey)
-	if err != nil {
-		return "", err
-	}
-	return signer.Sign(*claims)
+func init() {
+	_, _ = InitDefaultValidator()
 }
 
-// SignLicenseArmored serializes and cryptographically signs a set of Claims using an Ed25519 private key,
-// returning an armored PEM text block.
-func SignLicenseArmored(claims *Claims, privKey ed25519.PrivateKey) (string, error) {
-	if claims == nil {
-		return "", errors.New("cannot sign nil license claims")
-	}
-	if len(privKey) != ed25519.PrivateKeySize {
-		return "", fmt.Errorf("invalid Ed25519 private key size: expected %d bytes, got %d", ed25519.PrivateKeySize, len(privKey))
+// DefaultValidatorOptions constructs the standard validator options for otel-aws-log-processor.
+func DefaultValidatorOptions() []liblicense.ValidatorOption {
+	var opts []liblicense.ValidatorOption
+	opts = append(opts,
+		liblicense.WithProduct("otel-aws-log-processor"),
+		liblicense.WithAllowEnvKeyOverride(true),
+		liblicense.WithMaxClockDrift(15*time.Minute),
+	)
+
+	if fp := strings.TrimSpace(os.Getenv("DIVMORA_FINGERPRINT")); fp != "" {
+		opts = append(opts, liblicense.WithExpectedFingerprint(fp))
+	} else {
+		opts = append(opts, liblicense.WithAutoFingerprint(true))
 	}
 
-	signer, err := liblicense.NewSigner(privKey)
-	if err != nil {
-		return "", err
+	// 1. Software Version Enforcement:
+	vInfo := version.Get()
+	if vInfo.Version != "" && vInfo.Version != "dev" {
+		opts = append(opts, liblicense.WithCurrentVersion(vInfo.Version))
 	}
-	return signer.SignArmored(*claims)
+
+	// 2. Maintenance / Support Update Cutoff Enforcement:
+	if releaseTime, ok := vInfo.ReleaseTime(); ok {
+		opts = append(opts, liblicense.WithBuildDate(releaseTime))
+	}
+
+	return opts
+}
+
+// InitDefaultValidator initializes the package-level Validator singleton using
+// liblicense.NewValidatorWithFallbackKey to minimize cold-start latency and prevent
+// repeated disk key evaluation on warm Lambda invocations.
+func InitDefaultValidator() (*liblicense.Validator, error) {
+	validatorMu.Lock()
+	defer validatorMu.Unlock()
+
+	v, err := liblicense.NewValidatorWithFallbackKey(DefaultPublicKeyBase64, DefaultValidatorOptions()...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize license validator: %w", err)
+	}
+	defaultValidator = v
+	return v, nil
+}
+
+// GetDefaultValidator returns the initialized package-level Validator singleton.
+func GetDefaultValidator() (*liblicense.Validator, error) {
+	validatorMu.RLock()
+	v := defaultValidator
+	validatorMu.RUnlock()
+	if v != nil {
+		return v, nil
+	}
+	return InitDefaultValidator()
+}
+
+// ResetDefaultValidator clears the package-level Validator singleton (used primarily in tests).
+func ResetDefaultValidator() {
+	validatorMu.Lock()
+	defaultValidator = nil
+	validatorMu.Unlock()
+}
+
+// DefaultFallbackClaims returns standard fallback claims for serverless degraded mode.
+func DefaultFallbackClaims() *Claims {
+	return liblicense.DefaultCommunityClaims("otel-aws-log-processor")
+}
+
+// NewDefaultManagerConfig returns a ManagerConfig configured with PolicyDegraded and FallbackClaims
+// to ensure serverless log processing never panics or drops telemetry if a license file is renewing or missing.
+func NewDefaultManagerConfig(validator *liblicense.Validator) liblicense.ManagerConfig {
+	if validator == nil {
+		var err error
+		validator, err = GetDefaultValidator()
+		if err != nil {
+			validator, _ = liblicense.NewValidatorWithFallbackKey(DefaultPublicKeyBase64, DefaultValidatorOptions()...)
+		}
+	}
+	return liblicense.ManagerConfig{
+		Validator:              validator,
+		Policy:                 liblicense.PolicyDegraded,
+		FallbackClaims:         DefaultFallbackClaims(),
+		AllowDegradedMutations: true,
+	}
+}
+
+// GetValidator returns a Validator configured for the given public key,
+// or the singleton defaultValidator if pubKey is nil or empty.
+func GetValidator(pubKey ed25519.PublicKey) (*liblicense.Validator, error) {
+	if len(pubKey) > 0 {
+		return liblicense.NewValidator(pubKey, DefaultValidatorOptions()...)
+	}
+	return GetDefaultValidator()
 }
 
 // ParseAndVerify decodes, parses, and cryptographically verifies an Ed25519 signed license token
 // against the current system time in UTC.
-// If pubKey is nil or empty, GetVerificationPublicKey() is used to resolve the public key.
+// If pubKey is nil or empty, the package-level Validator singleton is used.
 func ParseAndVerify(token string, pubKey ed25519.PublicKey) (*ValidationStatus, error) {
 	return ParseAndVerifyAt(token, pubKey, time.Now().UTC())
 }
 
 // ParseAndVerifyAt decodes, parses, and cryptographically verifies an Ed25519 signed license token
 // against a specified evaluation time.
-// If pubKey is nil or empty, GetVerificationKeyRing() is used to resolve the public key.
+// If pubKey is nil or empty, the package-level Validator singleton is used.
 func ParseAndVerifyAt(token string, pubKey ed25519.PublicKey, evalTime time.Time) (*ValidationStatus, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return nil, errors.New("license token cannot be empty")
 	}
 
-	var keyRing *liblicense.KeyRing
-	if len(pubKey) > 0 {
-		keyRing = liblicense.NewKeyRing(pubKey)
-	} else {
-		resolvedRing, err := GetVerificationKeyRing()
-		if err != nil {
-			return nil, fmt.Errorf("failed to resolve verification keyring: %w", err)
-		}
-		keyRing = resolvedRing
-	}
-
-	var validatorOpts []liblicense.ValidatorOption
-	validatorOpts = append(validatorOpts, liblicense.WithProduct("otel-aws-log-processor"))
-	if fp := strings.TrimSpace(os.Getenv("DIVMORA_FINGERPRINT")); fp != "" {
-		validatorOpts = append(validatorOpts, liblicense.WithExpectedFingerprint(fp))
-	} else {
-		validatorOpts = append(validatorOpts, liblicense.WithAutoFingerprint(true))
-	}
-
-	// 1. Software Version Enforcement:
-	vInfo := version.Get()
-	if vInfo.Version != "" && vInfo.Version != "dev" {
-		validatorOpts = append(validatorOpts, liblicense.WithCurrentVersion(vInfo.Version))
-	}
-
-	// 2. Maintenance / Support Update Cutoff Enforcement:
-	if releaseTime, ok := vInfo.ReleaseTime(); ok {
-		validatorOpts = append(validatorOpts, liblicense.WithBuildDate(releaseTime))
+	validator, err := GetValidator(pubKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize license validator: %w", err)
 	}
 
 	if evalTime.IsZero() {
 		evalTime = time.Now().UTC()
-	}
-
-	// 3. Server Time / Clock Skew Defense via liblicense:
-	validatorOpts = append(validatorOpts,
-		liblicense.WithAuthoritativeTime(evalTime),
-		liblicense.WithMaxClockDrift(15*time.Minute),
-	)
-
-	validator, err := liblicense.NewValidatorWithKeyRing(keyRing, validatorOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize license validator: %w", err)
 	}
 
 	res, err := validator.VerifyWithResultAt(token, evalTime)

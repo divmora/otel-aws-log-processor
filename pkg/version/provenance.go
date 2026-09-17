@@ -3,6 +3,7 @@ package version
 import (
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -154,7 +155,14 @@ func SignRelease(claims *ReleaseClaims, privKey ed25519.PrivateKey) (string, err
 		KeyID:        claims.AuthorityID,
 	}
 
-	return liblicense.SignRelease(libClaims, privKey)
+	payloadJSON, err := json.Marshal(libClaims)
+	if err != nil {
+		return "", err
+	}
+	pB64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
+	signedData := []byte(fmt.Sprintf("%s.%s", liblicense.ProtocolPrefixRelease, pB64))
+	sig := ed25519.Sign(privKey, signedData)
+	return liblicense.EncodeReleaseToken(payloadJSON, sig), nil
 }
 
 // SignReleaseArmored signs release claims and formats as an armored PEM block.
@@ -194,7 +202,14 @@ func SignReleaseArmored(claims *ReleaseClaims, privKey ed25519.PrivateKey) (stri
 		KeyID:        claims.AuthorityID,
 	}
 
-	return liblicense.SignReleaseArmored(libClaims, privKey)
+	payloadJSON, err := json.Marshal(libClaims)
+	if err != nil {
+		return "", err
+	}
+	pB64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
+	signedData := []byte(fmt.Sprintf("%s.%s", liblicense.ProtocolPrefixRelease, pB64))
+	sig := ed25519.Sign(privKey, signedData)
+	return liblicense.EncodeReleaseArmored(payloadJSON, sig), nil
 }
 
 // ParseAndVerifyReleaseToken decodes, parses, and cryptographically verifies an Ed25519 signed release token.

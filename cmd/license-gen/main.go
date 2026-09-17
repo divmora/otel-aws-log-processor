@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"os"
@@ -123,7 +125,7 @@ func handleKeygen(args []string) {
 	privB64 := base64.StdEncoding.EncodeToString(privKey)
 
 	if *privFile != "" {
-		if err := liblicense.SavePrivateKeyToPEMFile(privKey, *privFile, 0600); err != nil {
+		if err := savePrivateKeyToPEMFile(privKey, *privFile, 0600); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to save private key to %s: %v\n", *privFile, err)
 			os.Exit(1)
 		}
@@ -256,15 +258,20 @@ func handleGenerate(args []string) {
 		GracePeriodDays: *gracePeriodDays,
 	}
 
+	payloadJSON, err := json.Marshal(claims)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to marshal claims: %v\n", err)
+		os.Exit(1)
+	}
+	pB64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
+	signedData := []byte(fmt.Sprintf("%s.%s", liblicense.VersionPrefix, pB64))
+	sig := ed25519.Sign(ed25519.PrivateKey(privKeyBytes), signedData)
+
 	var token string
 	if *armoredFlag {
-		token, err = license.SignLicenseArmored(claims, ed25519.PrivateKey(privKeyBytes))
+		token = liblicense.EncodeArmored(payloadJSON, sig)
 	} else {
-		token, err = license.SignLicense(claims, ed25519.PrivateKey(privKeyBytes))
-	}
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to sign license: %v\n", err)
-		os.Exit(1)
+		token = liblicense.EncodeToken(payloadJSON, sig)
 	}
 
 	if *outFileFlag != "" {
@@ -947,4 +954,16 @@ func handleRequest(args []string) {
 	} else {
 		fmt.Print(string(outBytes))
 	}
+}
+
+func savePrivateKeyToPEMFile(priv ed25519.PrivateKey, filePath string, perm os.FileMode) error {
+	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		return err
+	}
+	block := &pem.Block{
+		Type:  "PRIVATE KEY",
+		Bytes: der,
+	}
+	return os.WriteFile(filePath, pem.EncodeToMemory(block), perm)
 }

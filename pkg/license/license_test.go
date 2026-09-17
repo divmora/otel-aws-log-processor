@@ -2,7 +2,9 @@ package license
 
 import (
 	"crypto/ed25519"
-	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -11,17 +13,36 @@ import (
 	"github.com/divmora/otel-aws-log-processor/pkg/model"
 )
 
-func generateTestKeyPair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
-	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
+// Static deterministic test key pair to eliminate dynamic key generation loops.
+var (
+	testSeed    = []byte("divmora-license-test-seed-012345")
+	testPrivKey = ed25519.NewKeyFromSeed(testSeed)
+	testPubKey  = testPrivKey.Public().(ed25519.PublicKey)
+)
+
+func signTestToken(claims *Claims, privKey ed25519.PrivateKey) string {
+	payloadJSON, err := json.Marshal(claims)
 	if err != nil {
-		t.Fatalf("failed to generate test ed25519 keys: %v", err)
+		panic(err)
 	}
-	return pubKey, privKey
+	pB64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
+	signedData := []byte(fmt.Sprintf("%s.%s", liblicense.VersionPrefix, pB64))
+	sig := ed25519.Sign(privKey, signedData)
+	return liblicense.EncodeToken(payloadJSON, sig)
+}
+
+func signTestTokenArmored(claims *Claims, privKey ed25519.PrivateKey) string {
+	payloadJSON, err := json.Marshal(claims)
+	if err != nil {
+		panic(err)
+	}
+	pB64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
+	signedData := []byte(fmt.Sprintf("%s.%s", liblicense.VersionPrefix, pB64))
+	sig := ed25519.Sign(privKey, signedData)
+	return liblicense.EncodeArmored(payloadJSON, sig)
 }
 
 func TestSignAndVerifyToken(t *testing.T) {
-	pubKey, privKey := generateTestKeyPair(t)
-
 	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
 	claims := &Claims{
 		ID: "lic_test_123",
@@ -42,10 +63,7 @@ func TestSignAndVerifyToken(t *testing.T) {
 	}
 
 	// 1. Compact token format
-	token, err := SignLicense(claims, privKey)
-	if err != nil {
-		t.Fatalf("unexpected error signing license: %v", err)
-	}
+	token := signTestToken(claims, testPrivKey)
 	if token == "" {
 		t.Fatal("expected non-empty token")
 	}
@@ -54,7 +72,7 @@ func TestSignAndVerifyToken(t *testing.T) {
 	}
 
 	// Verify active
-	status, err := ParseAndVerifyAt(token, pubKey, now.AddDate(0, 1, 0))
+	status, err := ParseAndVerifyAt(token, testPubKey, now.AddDate(0, 1, 0))
 	if err != nil {
 		t.Fatalf("unexpected verification error: %v", err)
 	}
@@ -72,14 +90,11 @@ func TestSignAndVerifyToken(t *testing.T) {
 	}
 
 	// 2. Armored text format
-	armored, err := SignLicenseArmored(claims, privKey)
-	if err != nil {
-		t.Fatalf("unexpected error signing armored license: %v", err)
-	}
+	armored := signTestTokenArmored(claims, testPrivKey)
 	if !strings.Contains(armored, "-----BEGIN DIVMORA LICENSE KEY-----") {
 		t.Errorf("expected armored header, got: %s", armored)
 	}
-	armoredStatus, err := ParseAndVerifyAt(armored, pubKey, now.AddDate(0, 1, 0))
+	armoredStatus, err := ParseAndVerifyAt(armored, testPubKey, now.AddDate(0, 1, 0))
 	if err != nil {
 		t.Fatalf("unexpected armored verification error: %v", err)
 	}
@@ -89,7 +104,7 @@ func TestSignAndVerifyToken(t *testing.T) {
 
 	// Verify Grace Period
 	expiredTime := now.AddDate(1, 0, 5) // 5 days past expiry, within 14d grace
-	graceStatus, err := ParseAndVerifyAt(token, pubKey, expiredTime)
+	graceStatus, err := ParseAndVerifyAt(token, testPubKey, expiredTime)
 	if err != nil {
 		t.Fatalf("unexpected error during grace period: %v", err)
 	}
@@ -102,7 +117,7 @@ func TestSignAndVerifyToken(t *testing.T) {
 
 	// Verify Hard Expired (past 14 days)
 	hardExpiredTime := now.AddDate(1, 0, 20)
-	hardStatus, err := ParseAndVerifyAt(token, pubKey, hardExpiredTime)
+	hardStatus, err := ParseAndVerifyAt(token, testPubKey, hardExpiredTime)
 	if err == nil {
 		t.Error("expected error for hard expired license")
 	}
@@ -115,7 +130,6 @@ func TestSignAndVerifyToken(t *testing.T) {
 }
 
 func TestProductMismatch(t *testing.T) {
-	pubKey, privKey := generateTestKeyPair(t)
 	now := time.Now().UTC()
 
 	claims := &Claims{
@@ -127,19 +141,14 @@ func TestProductMismatch(t *testing.T) {
 		ExpiresAt: now.AddDate(1, 0, 0),
 	}
 
-	token, err := SignLicense(claims, privKey)
-	if err != nil {
-		t.Fatalf("failed to sign token: %v", err)
-	}
-
-	_, err = ParseAndVerifyAt(token, pubKey, now)
+	token := signTestToken(claims, testPrivKey)
+	_, err := ParseAndVerifyAt(token, testPubKey, now)
 	if err == nil {
 		t.Error("expected error for mismatched product")
 	}
 }
 
 func TestTamperedToken(t *testing.T) {
-	pubKey, privKey := generateTestKeyPair(t)
 	now := time.Now().UTC()
 
 	claims := &Claims{
@@ -151,14 +160,11 @@ func TestTamperedToken(t *testing.T) {
 		ExpiresAt: now.AddDate(0, 1, 0),
 	}
 
-	token, err := SignLicense(claims, privKey)
-	if err != nil {
-		t.Fatalf("failed to sign: %v", err)
-	}
+	token := signTestToken(claims, testPrivKey)
 
 	// Tamper with payload
 	tamperedToken := token[:len(token)-5] + "AAAAA"
-	_, err = ParseAndVerifyAt(tamperedToken, pubKey, now)
+	_, err := ParseAndVerifyAt(tamperedToken, testPubKey, now)
 	if err == nil {
 		t.Error("expected error for tampered token")
 	}
@@ -255,7 +261,6 @@ func TestEnforceProductionWithoutLicense(t *testing.T) {
 }
 
 func TestEnforceProductionWithLicenseAndAccountScoping(t *testing.T) {
-	pubKey, privKey := generateTestKeyPair(t)
 	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
 
 	claims := &Claims{
@@ -270,17 +275,14 @@ func TestEnforceProductionWithLicenseAndAccountScoping(t *testing.T) {
 		ExpiresAt: now.AddDate(1, 0, 0),
 	}
 
-	token, err := SignLicense(claims, privKey)
-	if err != nil {
-		t.Fatalf("failed to sign: %v", err)
-	}
+	token := signTestToken(claims, testPrivKey)
 
 	// 1. Matching Caller Account
 	matchOpts := EnforcementOptions{
 		Environment:     "production",
 		LicenseKey:      token,
 		CallerAccountID: "111122223333",
-		PublicKey:       pubKey,
+		PublicKey:       testPubKey,
 		EvaluationTime:  now,
 	}
 	matchStatus, err := Enforce(matchOpts)
@@ -297,7 +299,7 @@ func TestEnforceProductionWithLicenseAndAccountScoping(t *testing.T) {
 		LicenseKey:      token,
 		EnforcementMode: "strict",
 		CallerAccountID: "999999999999", // not in allowed
-		PublicKey:       pubKey,
+		PublicKey:       testPubKey,
 		EvaluationTime:  now,
 	}
 	_, err = Enforce(mismatchOpts)
@@ -312,7 +314,7 @@ func TestEnforceProductionWithLicenseAndAccountScoping(t *testing.T) {
 		EnforcementMode:  "strict",
 		CallerAccountID:  "111122223333",
 		SourceAccountIDs: []string{"999999999999"}, // source log from unauthorized account
-		PublicKey:        pubKey,
+		PublicKey:        testPubKey,
 		EvaluationTime:   now,
 	}
 	_, err = Enforce(srcMismatchOpts)
@@ -322,7 +324,6 @@ func TestEnforceProductionWithLicenseAndAccountScoping(t *testing.T) {
 }
 
 func TestClockSkewDefense(t *testing.T) {
-	pubKey, privKey := generateTestKeyPair(t)
 	authTime := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
 
 	claims := &Claims{
@@ -334,7 +335,7 @@ func TestClockSkewDefense(t *testing.T) {
 		ExpiresAt: authTime.AddDate(0, 1, 0), // expires in 1 month
 	}
 
-	token, _ := SignLicense(claims, privKey)
+	token := signTestToken(claims, testPrivKey)
 
 	// Container clock claiming to be 2 months later (expired),
 	// but authoritative AWS time says it is still active (12:00:00 on Sept 15)
@@ -343,7 +344,7 @@ func TestClockSkewDefense(t *testing.T) {
 	opts := EnforcementOptions{
 		Environment:       "production",
 		LicenseKey:        token,
-		PublicKey:         pubKey,
+		PublicKey:         testPubKey,
 		EvaluationTime:    forgedLocalClock,
 		AuthoritativeTime: authTime, // S3 HTTP Date
 	}
@@ -402,7 +403,6 @@ func TestAppendLicenseAttributes(t *testing.T) {
 }
 
 func TestNodeLockedLicense_AutoFingerprint(t *testing.T) {
-	pubKey, privKey := generateTestKeyPair(t)
 	now := time.Now().UTC()
 
 	fp, err := liblicense.ResolveDefaultFingerprint()
@@ -422,12 +422,9 @@ func TestNodeLockedLicense_AutoFingerprint(t *testing.T) {
 		ExpiresAt:   now.AddDate(1, 0, 0),
 	}
 
-	token, err := SignLicense(claims, privKey)
-	if err != nil {
-		t.Fatalf("unexpected signing error: %v", err)
-	}
+	token := signTestToken(claims, testPrivKey)
 
-	status, err := ParseAndVerifyAt(token, pubKey, now)
+	status, err := ParseAndVerifyAt(token, testPubKey, now)
 	if err != nil {
 		t.Fatalf("expected node-locked license to verify successfully: %v", err)
 	}
@@ -446,12 +443,60 @@ func TestNodeLockedLicense_AutoFingerprint(t *testing.T) {
 		IssuedAt:    now,
 		ExpiresAt:   now.AddDate(1, 0, 0),
 	}
-	mismatchedToken, err := SignLicense(mismatchedClaims, privKey)
-	if err != nil {
-		t.Fatalf("unexpected signing error: %v", err)
-	}
-	_, err = ParseAndVerifyAt(mismatchedToken, pubKey, now)
+	mismatchedToken := signTestToken(mismatchedClaims, testPrivKey)
+	_, err = ParseAndVerifyAt(mismatchedToken, testPubKey, now)
 	if err == nil {
 		t.Fatal("expected error verifying license with mismatched node fingerprint, got nil")
+	}
+}
+
+func TestValidatorSingleton(t *testing.T) {
+	v1, err := GetDefaultValidator()
+	if err != nil {
+		t.Fatalf("unexpected error getting default validator: %v", err)
+	}
+	if v1 == nil {
+		t.Fatal("expected non-nil default validator")
+	}
+
+	v2, err := GetDefaultValidator()
+	if err != nil {
+		t.Fatalf("unexpected error getting default validator second time: %v", err)
+	}
+	if v1 != v2 {
+		t.Error("expected GetDefaultValidator to return singleton instance")
+	}
+
+	ResetDefaultValidator()
+	v3, err := GetDefaultValidator()
+	if err != nil {
+		t.Fatalf("unexpected error getting default validator after reset: %v", err)
+	}
+	if v3 == nil {
+		t.Fatal("expected non-nil default validator after reset")
+	}
+}
+
+func TestPolicyDegradedFallbackClaims(t *testing.T) {
+	claims := DefaultFallbackClaims()
+	if claims == nil {
+		t.Fatal("expected non-nil default fallback claims")
+	}
+	if claims.Product != "otel-aws-log-processor" {
+		t.Errorf("expected product otel-aws-log-processor, got %s", claims.Product)
+	}
+	if claims.Plan != "community" {
+		t.Errorf("expected plan community, got %s", claims.Plan)
+	}
+
+	cfg := NewDefaultManagerConfig(nil)
+	if cfg.Policy != liblicense.PolicyDegraded {
+		t.Errorf("expected PolicyDegraded, got %v", cfg.Policy)
+	}
+	if cfg.FallbackClaims == nil {
+		t.Fatal("expected non-nil FallbackClaims in ManagerConfig")
+	}
+	if !cfg.AllowDegradedMutations {
+		t.Error("expected AllowDegradedMutations to be true")
 	}
 }

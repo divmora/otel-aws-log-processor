@@ -3,13 +3,30 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/divmora/otel-aws-log-processor/pkg/license"
 )
+
+var (
+	testHandlerSeed    = []byte("divmora-lambda-handler-test-0123")
+	testHandlerPrivKey = ed25519.NewKeyFromSeed(testHandlerSeed)
+	testHandlerPubKey  = testHandlerPrivKey.Public().(ed25519.PublicKey)
+)
+
+func signTestHandlerToken(claims *license.Claims, privKey ed25519.PrivateKey) string {
+	payloadJSON, _ := json.Marshal(claims)
+	pB64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
+	signedData := []byte(fmt.Sprintf("%s.%s", "DIV1", pB64))
+	sig := ed25519.Sign(privKey, signedData)
+	sB64 := base64.RawURLEncoding.EncodeToString(sig)
+	return fmt.Sprintf("DIV1.%s.%s", pB64, sB64)
+}
 
 func TestHandlerLicensingModes(t *testing.T) {
 	ctx := context.Background()
@@ -68,11 +85,7 @@ func TestHandlerLicensingModes(t *testing.T) {
 
 	// 4. Test Production with Valid Commercial License
 	t.Run("ProductionWithValidLicense", func(t *testing.T) {
-		pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			t.Fatalf("failed to generate keys: %v", err)
-		}
-		license.SetVerificationPublicKey(pubKey)
+		license.SetVerificationPublicKey(testHandlerPubKey)
 		defer license.ResetVerificationPublicKey()
 
 		claims := &license.Claims{
@@ -89,10 +102,7 @@ func TestHandlerLicensingModes(t *testing.T) {
 			ExpiresAt: time.Now().UTC().AddDate(1, 0, 0),
 		}
 
-		token, err := license.SignLicense(claims, privKey)
-		if err != nil {
-			t.Fatalf("failed to sign token: %v", err)
-		}
+		token := signTestHandlerToken(claims, testHandlerPrivKey)
 
 		t.Setenv("ENVIRONMENT", "production")
 		t.Setenv("DIVMORA_LICENSE_MODE", "strict")

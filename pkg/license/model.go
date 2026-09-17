@@ -40,6 +40,22 @@ type BSLUsageRequest = liblicense.BSLUsageRequest
 // BSLEntitlementResult is the evaluation result of a BSLUsageRequest against BSLPolicy.
 type BSLEntitlementResult = liblicense.BSLEntitlementResult
 
+// EnforcementPolicy defines how the Manager handles license expiration, missing licenses, or verification failures.
+type EnforcementPolicy = liblicense.EnforcementPolicy
+
+// Enforcement policy constants.
+const (
+	PolicyStrict   = liblicense.PolicyStrict
+	PolicyDegraded = liblicense.PolicyDegraded
+	PolicyWarnOnly = liblicense.PolicyWarnOnly
+)
+
+// Manager encapsulates lifecycle management and continuous monitoring of license state.
+type Manager = liblicense.Manager
+
+// ManagerConfig provides configuration parameters for the background License Manager.
+type ManagerConfig = liblicense.ManagerConfig
+
 // GetClaimsPlan returns the subscription plan/tier from Claims.
 func GetClaimsPlan(c *Claims) string {
 	if c == nil || c.Plan == "" {
