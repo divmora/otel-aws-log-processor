@@ -73,11 +73,21 @@ lint:
 
 # Build local Docker image
 docker-build:
-	@docker build --provenance=false --no-cache -t otel-aws-log-processor:latest .
+	@docker build --provenance=false --no-cache \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg DATE=$(DATE) \
+		--build-arg RELEASE_SIG="$(RELEASE_SIG)" \
+		-t otel-aws-log-processor:latest .
 
 # Build multi-architecture Docker image
 docker-build-multiarch:
-	@docker buildx build --platform linux/amd64,linux/arm64 -t otel-aws-log-processor:latest .
+	@docker buildx build --platform linux/amd64,linux/arm64 \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg DATE=$(DATE) \
+		--build-arg RELEASE_SIG="$(RELEASE_SIG)" \
+		-t otel-aws-log-processor:latest .
 
 PORT ?= 3000
 

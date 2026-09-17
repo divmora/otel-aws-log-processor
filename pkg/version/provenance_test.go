@@ -226,6 +226,24 @@ func TestResolveReleaseSignature_SidecarFile(t *testing.T) {
 	assert.Contains(t, source, "sidecar file")
 }
 
+func TestResolveReleaseSignature_LambdaTaskRoot(t *testing.T) {
+	origSig := version.ReleaseSignature
+	version.ReleaseSignature = "none"
+	defer func() { version.ReleaseSignature = origSig }()
+
+	tempDir := t.TempDir()
+	expectedToken := "DIVREL1.lambda.token.123"
+	sigFile := filepath.Join(tempDir, "release.sig")
+	require.NoError(t, os.WriteFile(sigFile, []byte(expectedToken), 0644))
+
+	t.Setenv("LAMBDA_TASK_ROOT", tempDir)
+
+	resolved, source := version.ResolveReleaseSignature()
+	assert.Equal(t, expectedToken, resolved)
+	assert.Contains(t, source, "sidecar file")
+	assert.Contains(t, source, tempDir)
+}
+
 func TestSignAndVerifyReleaseToken_ArmoredPEM(t *testing.T) {
 	pub, priv := generateTestReleaseKeyPair(t)
 

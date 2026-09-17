@@ -77,6 +77,8 @@ func ParseAndVerifyAt(token string, pubKey ed25519.PublicKey, evalTime time.Time
 	validatorOpts = append(validatorOpts, liblicense.WithProduct("otel-aws-log-processor"))
 	if fp := strings.TrimSpace(os.Getenv("DIVMORA_FINGERPRINT")); fp != "" {
 		validatorOpts = append(validatorOpts, liblicense.WithExpectedFingerprint(fp))
+	} else {
+		validatorOpts = append(validatorOpts, liblicense.WithAutoFingerprint(true))
 	}
 
 	// 1. Software Version Enforcement:

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -8,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,6 +30,10 @@ func main() {
 		handleKeygen(os.Args[2:])
 	case "generate":
 		handleGenerate(os.Args[2:])
+	case "fingerprint":
+		handleFingerprint(os.Args[2:])
+	case "request":
+		handleRequest(os.Args[2:])
 	case "status":
 		handleStatus(os.Args[2:])
 	case "bsl-eval":
@@ -58,6 +64,8 @@ Usage:
 Commands:
   keygen          Generate a new Ed25519 cryptographic key pair (base64 and/or PEM files)
   generate        Mint and sign a new commercial license token
+  fingerprint     Display machine hardware or cloud execution environment fingerprint
+  request         Generate an air-gapped license request file (.divreq) bound to hardware
   status          Display standardized terminal license status card and quota table
   bsl-eval        Evaluate BSL 1.1 dual-licensing entitlement and Additional Use Grants
   inspect         Decode and inspect license claims without verification
@@ -141,13 +149,15 @@ func handleKeygen(args []string) {
 func handleGenerate(args []string) {
 	fs := flag.NewFlagSet("generate", flag.ExitOnError)
 
-	customerName := fs.String("customer", "", "Customer name (required)")
+	customerName := fs.String("customer", "", "Customer name (required, or inferred from --request)")
 	customerEmail := fs.String("email", "", "Customer email")
 	orgID := fs.String("org-id", "", "Customer organization ID")
 	product := fs.String("product", "otel-aws-log-processor", "Product identifier")
 	tier := fs.String("tier", license.TierEnterprise, "Subscription tier (enterprise, pro, trial, community)")
 	accounts := fs.String("accounts", "*", "Comma-separated list of allowed AWS Account IDs (or '*' for any)")
 	features := fs.String("features", "*", "Comma-separated list of enabled features (or '*' for all)")
+	fingerprintFlag := fs.String("fingerprint", "", "Optional machine or cloud execution environment fingerprint to node-lock license")
+	requestFileFlag := fs.String("request", "", "Path to air-gapped license request file (.divreq or PEM) to fulfill")
 	durationDays := fs.Int("duration-days", 365, "License validity duration in days")
 	gracePeriodDays := fs.Int("grace-period-days", 14, "Grace period in days after expiration")
 	privKeyB64 := fs.String("private-key", "", "Base64-encoded Ed25519 private signing key (or set DIVMORA_PRIVATE_KEY)")
@@ -158,8 +168,28 @@ func handleGenerate(args []string) {
 		os.Exit(1)
 	}
 
+	if *requestFileFlag != "" {
+		licReq, err := liblicense.ParseLicenseRequestFile(*requestFileFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to read license request from %s: %v\n", *requestFileFlag, err)
+			os.Exit(1)
+		}
+		if *customerName == "" {
+			*customerName = licReq.Customer
+		}
+		if *product == "otel-aws-log-processor" && licReq.Product != "" {
+			*product = licReq.Product
+		}
+		if *tier == license.TierEnterprise && licReq.Plan != "" {
+			*tier = licReq.Plan
+		}
+		if *fingerprintFlag == "" && licReq.Fingerprint.Primary != "" {
+			*fingerprintFlag = licReq.Fingerprint.Primary
+		}
+	}
+
 	if *customerName == "" {
-		fmt.Fprintln(os.Stderr, "Error: --customer is required")
+		fmt.Fprintln(os.Stderr, "Error: --customer is required (or provide --request)")
 		fs.Usage()
 		os.Exit(1)
 	}
@@ -214,8 +244,9 @@ func handleGenerate(args []string) {
 			Email: *customerEmail,
 			OrgID: *orgID,
 		},
-		Product: *product,
-		Plan:    *tier,
+		Product:     *product,
+		Plan:        *tier,
+		Fingerprint: *fingerprintFlag,
 		Scope: &license.Scope{
 			Accounts: accList,
 		},
@@ -248,6 +279,9 @@ func handleGenerate(args []string) {
 	fmt.Printf("  Customer:     %s\n", claims.Customer.Name)
 	fmt.Printf("  Product:      %s\n", claims.Product)
 	fmt.Printf("  Tier / Plan:  %s\n", claims.Plan)
+	if claims.Fingerprint != "" {
+		fmt.Printf("  Node-Lock:    %s\n", claims.Fingerprint)
+	}
 	if claims.Scope != nil && len(claims.Scope.Accounts) > 0 {
 		fmt.Printf("  AWS Accounts: %s\n", strings.Join(claims.Scope.Accounts, ", "))
 	}
@@ -760,5 +794,157 @@ func handleVerifyRelease(args []string) {
 	fmt.Printf("  Authority:        %s\n", claims.Authority)
 	if claims.AuthorityID != "" {
 		fmt.Printf("  Authority ID:     %s\n", claims.AuthorityID)
+	}
+}
+
+func handleFingerprint(args []string) {
+	fs := flag.NewFlagSet("fingerprint", flag.ExitOnError)
+	platformFlag := fs.String("platform", "auto", "Target platform resolver: auto, host, aws, lambda, k8s")
+	jsonFlag := fs.Bool("json", false, "Output machine fingerprint in JSON format")
+	quietFlag := fs.Bool("quiet", false, "Output only the primary fingerprint string")
+
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	var resolver liblicense.FingerprintResolver
+	switch strings.ToLower(*platformFlag) {
+	case "auto":
+		resolver = liblicense.NewDefaultCompositeResolver()
+	case "host":
+		resolver = liblicense.NewHostResolver()
+	case "aws", "aws-ec2", "ec2":
+		resolver = liblicense.NewAWSEC2Resolver()
+	case "lambda", "aws-lambda":
+		resolver = liblicense.NewAWSLambdaResolver()
+	case "k8s", "kubernetes":
+		resolver = liblicense.NewKubernetesResolver()
+	default:
+		fmt.Fprintf(os.Stderr, "Error: unknown platform %q (valid: auto, host, aws, lambda, k8s)\n", *platformFlag)
+		os.Exit(1)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	fp, err := resolver.Resolve(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to resolve machine fingerprint: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *quietFlag {
+		fmt.Println(fp.Primary)
+		return
+	}
+
+	if *jsonFlag {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(fp); err != nil {
+			fmt.Fprintf(os.Stderr, "Error encoding JSON: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	fmt.Println(strings.Repeat("=", 72))
+	fmt.Println("                       MACHINE FINGERPRINT")
+	fmt.Println(strings.Repeat("=", 72))
+	fmt.Printf("  %-20s %s\n", "Primary ID:", fp.Primary)
+	fmt.Printf("  %-20s %s\n", "Platform:", fp.Platform)
+	fmt.Printf("  %-20s %s\n", "Short Digest:", fp.ShortDigest)
+	fmt.Printf("  %-20s %s\n", "Canonical Digest:", fp.CanonicalDigest)
+	fmt.Printf("  %-20s %s\n", "Resolved At:", fp.ResolvedAt.Format(time.RFC3339))
+
+	if len(fp.Components) > 0 {
+		fmt.Println("\nHARDWARE & SYSTEM COMPONENTS:")
+		var keys []string
+		for k := range fp.Components {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Printf("  • %-20s %s\n", k+":", fp.Components[k])
+		}
+	}
+	fmt.Println(strings.Repeat("=", 72))
+}
+
+func handleRequest(args []string) {
+	fs := flag.NewFlagSet("request", flag.ExitOnError)
+	customer := fs.String("customer", "", "Licensee / Customer name (required)")
+	product := fs.String("product", "otel-aws-log-processor", "Product identifier")
+	plan := fs.String("plan", "enterprise", "Requested license tier: community, pro, enterprise")
+	platform := fs.String("platform", "auto", "Hardware resolver platform: auto, host, aws, lambda, k8s")
+	notes := fs.String("notes", "", "Optional deployment notes or request context")
+	outFile := fs.String("out-file", "", "Output file path (default: stdout, e.g. 'request.divreq')")
+	asJSON := fs.Bool("json", false, "Output raw JSON instead of armored PEM block")
+
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	if *customer == "" {
+		fmt.Fprintln(os.Stderr, "Error: --customer is required")
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	var resolver liblicense.FingerprintResolver
+	switch strings.ToLower(*platform) {
+	case "auto":
+		resolver = liblicense.NewDefaultCompositeResolver()
+	case "host":
+		resolver = liblicense.NewHostResolver()
+	case "aws", "aws-ec2", "ec2":
+		resolver = liblicense.NewAWSEC2Resolver()
+	case "lambda", "aws-lambda":
+		resolver = liblicense.NewAWSLambdaResolver()
+	case "k8s", "kubernetes":
+		resolver = liblicense.NewKubernetesResolver()
+	default:
+		fmt.Fprintf(os.Stderr, "Error: unknown platform %q; valid: auto, host, aws, lambda, k8s\n", *platform)
+		os.Exit(1)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	fp, err := resolver.Resolve(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to resolve machine fingerprint: %v\n", err)
+		os.Exit(1)
+	}
+
+	req := liblicense.NewLicenseRequest(*customer, *product, *fp)
+	req.Plan = *plan
+	req.Notes = *notes
+
+	var outBytes []byte
+	if *asJSON {
+		outBytes, err = json.MarshalIndent(req, "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to encode JSON: %v\n", err)
+			os.Exit(1)
+		}
+		outBytes = append(outBytes, '\n')
+	} else {
+		outBytes, err = req.Armored()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to format armored request: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	if *outFile != "" {
+		if err := os.WriteFile(*outFile, outBytes, 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to write request file %s: %v\n", *outFile, err)
+			os.Exit(1)
+		}
+		fmt.Printf("✓ Successfully generated air-gapped license request -> %s\n", *outFile)
+		fmt.Printf("  Primary Fingerprint: %s (%s)\n", fp.Primary, fp.Platform)
+	} else {
+		fmt.Print(string(outBytes))
 	}
 }

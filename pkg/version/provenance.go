@@ -266,6 +266,13 @@ func ResolveReleaseSignature() (string, string) {
 		"otel-aws-log-processor.sig",
 	}
 
+	if taskRoot := strings.TrimSpace(os.Getenv("LAMBDA_TASK_ROOT")); taskRoot != "" {
+		candidates = append(candidates,
+			filepath.Join(taskRoot, "release.sig"),
+			filepath.Join(taskRoot, "otel-aws-log-processor.sig"),
+		)
+	}
+
 	if execPath, err := os.Executable(); err == nil {
 		execDir := filepath.Dir(execPath)
 		candidates = append(candidates,

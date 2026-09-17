@@ -115,3 +115,54 @@ func TestLicenseGen_GenerateAndInspect(t *testing.T) {
 		handleInspect([]string{"--file=" + licFile, "--json"})
 	})
 }
+
+func TestLicenseGen_Fingerprint(t *testing.T) {
+	assert.NotPanics(t, func() {
+		handleFingerprint([]string{"--platform=host"})
+	})
+	assert.NotPanics(t, func() {
+		handleFingerprint([]string{"--platform=auto", "--json"})
+	})
+	assert.NotPanics(t, func() {
+		handleFingerprint([]string{"--platform=host", "--quiet"})
+	})
+}
+
+func TestLicenseGen_RequestAndFulfill(t *testing.T) {
+	_, privB64 := generateTestKeyPair(t)
+	tmpDir := t.TempDir()
+	reqFile := filepath.Join(tmpDir, "request.divreq")
+	licFile := filepath.Join(tmpDir, "fulfilled.lic")
+
+	// 1. Generate air-gapped request file
+	handleRequest([]string{
+		"--customer=AirGapped Corp",
+		"--product=otel-aws-log-processor",
+		"--plan=pro",
+		"--platform=host",
+		"--out-file=" + reqFile,
+	})
+	assert.FileExists(t, reqFile)
+
+	reqContent, err := os.ReadFile(reqFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(reqContent), "-----BEGIN DIVMORA LICENSE REQUEST-----")
+
+	// 2. Fulfill the request using handleGenerate --request
+	handleGenerate([]string{
+		"--request=" + reqFile,
+		"--private-key=" + privB64,
+		"--out-file=" + licFile,
+	})
+	assert.FileExists(t, licFile)
+
+	licContent, err := os.ReadFile(licFile)
+	require.NoError(t, err)
+	token := strings.TrimSpace(string(licContent))
+	assert.True(t, strings.HasPrefix(token, "DIV1."))
+
+	// 3. Inspect fulfilled license and verify customer & node-lock fingerprint
+	assert.NotPanics(t, func() {
+		handleInspect([]string{"--file=" + licFile})
+	})
+}

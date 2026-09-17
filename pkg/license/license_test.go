@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	liblicense "github.com/divmora/license-go/pkg/license"
 	"github.com/divmora/otel-aws-log-processor/pkg/model"
 )
 
@@ -397,5 +398,60 @@ func TestAppendLicenseAttributes(t *testing.T) {
 	}
 	if !foundStatus || !foundTier {
 		t.Error("expected to find divmora.license.status and divmora.license.tier attributes")
+	}
+}
+
+func TestNodeLockedLicense_AutoFingerprint(t *testing.T) {
+	pubKey, privKey := generateTestKeyPair(t)
+	now := time.Now().UTC()
+
+	fp, err := liblicense.ResolveDefaultFingerprint()
+	if err != nil {
+		t.Skipf("skipping machine fingerprint test: %v", err)
+	}
+
+	// 1. License with matching primary fingerprint
+	claims := &Claims{
+		ID:          "lic_nodelock_123",
+		Customer:    Customer{Name: "NodeLock Corp"},
+		Product:     "otel-aws-log-processor",
+		Plan:        TierEnterprise,
+		Fingerprint: fp.Primary,
+		Features:    []string{"*"},
+		IssuedAt:    now,
+		ExpiresAt:   now.AddDate(1, 0, 0),
+	}
+
+	token, err := SignLicense(claims, privKey)
+	if err != nil {
+		t.Fatalf("unexpected signing error: %v", err)
+	}
+
+	status, err := ParseAndVerifyAt(token, pubKey, now)
+	if err != nil {
+		t.Fatalf("expected node-locked license to verify successfully: %v", err)
+	}
+	if !status.Valid {
+		t.Errorf("expected status to be valid for matching node fingerprint")
+	}
+
+	// 2. License with mismatched fingerprint should fail
+	mismatchedClaims := &Claims{
+		ID:          "lic_mismatch_123",
+		Customer:    Customer{Name: "Mismatch Corp"},
+		Product:     "otel-aws-log-processor",
+		Plan:        TierEnterprise,
+		Fingerprint: "fp:host:0000000000000000",
+		Features:    []string{"*"},
+		IssuedAt:    now,
+		ExpiresAt:   now.AddDate(1, 0, 0),
+	}
+	mismatchedToken, err := SignLicense(mismatchedClaims, privKey)
+	if err != nil {
+		t.Fatalf("unexpected signing error: %v", err)
+	}
+	_, err = ParseAndVerifyAt(mismatchedToken, pubKey, now)
+	if err == nil {
+		t.Fatal("expected error verifying license with mismatched node fingerprint, got nil")
 	}
 }
