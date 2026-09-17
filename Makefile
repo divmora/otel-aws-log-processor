@@ -1,9 +1,12 @@
-.PHONY: build clean test test-coverage dev-setup fmt lint lambda-package docker-build docker-build-multiarch docs-serve help
+.PHONY: build sign-release clean test test-coverage dev-setup fmt lint lambda-package docker-build docker-build-multiarch docs-serve help
+
+export PATH := $(shell go env GOPATH)/bin:$(PATH)
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
 DATE    ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 RELEASE_SIG ?= $(shell cat release.sig 2>/dev/null || echo "none")
+PRIVATE_KEY ?= $(or $(DIVMORA_RELEASE_KEY),$(DIVMORA_PRIVATE_KEY))
 
 LDFLAGS := -s -w \
 	-X github.com/divmora/otel-aws-log-processor/pkg/version.Version=$(VERSION) \
@@ -20,6 +23,16 @@ build:
 	@mkdir -p bin
 	@go build -ldflags="$(LDFLAGS)" -o bin/bootstrap ./cmd/lambda
 	@echo "✓ Build complete! Binary in ./bin/bootstrap"
+
+# Sign release metadata for binary provenance
+sign-release:
+	@license-cli release sign \
+		-product "otel-aws-log-processor" \
+		-version "$(VERSION)" \
+		-git-commit "$(COMMIT)" \
+		-binary "bin/bootstrap" \
+		-out "bin/release.sig" \
+		-armored $(if $(PRIVATE_KEY),-private-key "$(PRIVATE_KEY)")
 
 # Clean build artifacts
 clean:
@@ -43,7 +56,9 @@ lambda-package:
 	@mkdir -p bin
 	@GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o bin/bootstrap ./cmd/lambda
 	@echo "Creating Lambda deployment package..."
-	@if [ -f release.sig ]; then cp release.sig bin/; cd bin && zip -j ../lambda.zip bootstrap release.sig; else cd bin && zip -j ../lambda.zip bootstrap; fi
+	@if [ -f bin/release.sig ]; then cd bin && zip -j ../lambda.zip bootstrap release.sig; \
+	elif [ -f release.sig ]; then cp release.sig bin/; cd bin && zip -j ../lambda.zip bootstrap release.sig; \
+	else cd bin && zip -j ../lambda.zip bootstrap; fi
 	@echo "✓ Lambda package created: lambda.zip"
 
 # Install development dependencies
@@ -87,6 +102,7 @@ docs-serve:
 help:
 	@echo "Available targets:"
 	@echo "  make build                  - Build Lambda binary to bin/"
+	@echo "  make sign-release           - Sign release attestation with license-cli"
 	@echo "  make clean                  - Remove build artifacts"
 	@echo "  make test                   - Run unit tests"
 	@echo "  make test-coverage          - Run unit tests with coverage profile"

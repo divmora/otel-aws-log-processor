@@ -34,30 +34,6 @@ builds:
     mod_timestamp: '{{ .CommitTimestamp }}'
 
   # ============================================================================
-  # DIVMORA License Generator CLI Binary
-  # ============================================================================
-  - id: license-gen
-    main: ./cmd/license-gen
-    binary: license-gen
-    flags:
-      - -trimpath
-    env:
-      - CGO_ENABLED=0
-    goos:
-      - linux
-      - darwin
-      - windows
-    goarch:
-      - amd64
-      - arm64
-    ldflags:
-      - -s -w
-      - -X github.com/divmora/otel-aws-log-processor/pkg/version.Version={{ .Version }}
-      - -X github.com/divmora/otel-aws-log-processor/pkg/version.GitCommit={{ .FullCommit }}
-      - -X github.com/divmora/otel-aws-log-processor/pkg/version.BuildDate={{ .Date }}
-    mod_timestamp: '{{ .CommitTimestamp }}'
-
-  # ============================================================================
   # AWS Lambda Custom Runtime Bootstrap Binary
   # ============================================================================
   - id: lambda
@@ -85,7 +61,6 @@ archives:
   - id: cli-archive
     ids:
       - otel-aws-log-processor
-      - license-gen
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats:
       - tar.gz
