@@ -44,8 +44,8 @@ github.com/aws/aws-sdk-go-v2/service/sts v1.51.0 h1:Zpnqa6XtrNzXZnwbdCqHOXpXhMsa
 github.com/aws/aws-sdk-go-v2/service/sts v1.51.0/go.mod h1:/8JRcdTt//hG0Q4BTmGbuOplT7ABe+5rdtqUHqXvYIM=
 github.com/aws/smithy-go v1.28.1 h1:R/nXH00c8qcfCzQVELtRw+eLQWtzv+VAIEFJ1/xxXlQ=
 github.com/aws/smithy-go v1.28.1/go.mod h1:YE2RhdIuDbA5E5bTdciG9KrW3+TiEONeUWCqxX9i1Fc=
-github.com/divmora/license-go v1.0.0 h1:CiMgBNXRe/R1tkMx3VvK0F6IRrhjts7HUXue1Wt62Ao=
-github.com/divmora/license-go v1.0.0/go.mod h1:wHISCzQ18JTl6eMy77sIVM7+0UZJ/gSrXov0+SqIOio=
+github.com/divmora/license-go v1.3.1 h1:1WY6VVMjSIEFbNWauNxelyF8usWy4owskXcta7VrlGI=
+github.com/divmora/license-go v1.3.1/go.mod h1:wHISCzQ18JTl6eMy77sIVM7+0UZJ/gSrXov0+SqIOio=
 github.com/google/go-cmp v0.5.5 h1:Khx7svrCpmxxtHBq5j2mp/xVjsi8hQMfNLvJFAlrGgU=
 github.com/google/go-cmp v0.5.5/go.mod h1:v8dTdLbMG2kIc/vJvl+f65V22dbkXbowE6jgT/gNBxE=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=

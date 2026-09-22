@@ -2,8 +2,10 @@ package version
 
 import (
 	"crypto/ed25519"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
@@ -16,7 +18,7 @@ import (
 )
 
 // DefaultReleasePublicKeyBase64 is the embedded production Ed25519 public verification key for DIVMORA Technologies.
-const DefaultReleasePublicKeyBase64 = "FhmwiOvzcfqm0O1n62EAi101cOsWxDLM4rWE7Y0GbPs="
+const DefaultReleasePublicKeyBase64 = "K8GS3G93kHK5kfav+jxrLwZMIh710EWVyL0tvHLfE5A="
 
 // ReleaseSignature holds the cryptographic release token injected at compile time via -ldflags:
 // -X github.com/divmora/otel-aws-log-processor/pkg/version.ReleaseSignature=<token>
@@ -115,6 +117,53 @@ func GetReleaseVerificationPublicKey() (ed25519.PublicKey, error) {
 	}
 
 	return ed25519.PublicKey(keyBytes), nil
+}
+
+// ParseReleasePrivateKey decodes an Ed25519 private key from base64 raw seed (32 bytes),
+// base64 private key (64 bytes), or PKCS#8 PEM string.
+func ParseReleasePrivateKey(keyStr string) (ed25519.PrivateKey, error) {
+	trimmed := strings.TrimSpace(keyStr)
+	if trimmed == "" {
+		return nil, errors.New("private key string cannot be empty")
+	}
+
+	// Try PEM block
+	if strings.Contains(trimmed, "-----BEGIN") {
+		block, _ := pem.Decode([]byte(trimmed))
+		if block != nil {
+			parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+			if err == nil {
+				if pk, ok := parsed.(ed25519.PrivateKey); ok {
+					return pk, nil
+				}
+			}
+		}
+	}
+
+	// Try base64 decoding
+	decoded, err := base64.StdEncoding.DecodeString(trimmed)
+	if err != nil {
+		decoded, err = base64.RawURLEncoding.DecodeString(trimmed)
+	}
+	if err == nil {
+		if len(decoded) == ed25519.PrivateKeySize {
+			return ed25519.PrivateKey(decoded), nil
+		}
+		if len(decoded) == ed25519.SeedSize {
+			return ed25519.NewKeyFromSeed(decoded), nil
+		}
+	}
+
+	return nil, errors.New("invalid Ed25519 release private key format: expected 32-byte seed or 64-byte private key")
+}
+
+// GetReleaseSigningPrivateKey resolves the Ed25519 private key from DIVMORA_RELEASE_PRIVATE_KEY environment variable.
+func GetReleaseSigningPrivateKey() (ed25519.PrivateKey, error) {
+	keyStr := strings.TrimSpace(os.Getenv("DIVMORA_RELEASE_PRIVATE_KEY"))
+	if keyStr == "" {
+		return nil, errors.New("DIVMORA_RELEASE_PRIVATE_KEY environment variable is not set")
+	}
+	return ParseReleasePrivateKey(keyStr)
 }
 
 // SignRelease serializes and cryptographically signs a set of ReleaseClaims using an Ed25519 private key,

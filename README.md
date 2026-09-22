@@ -237,12 +237,21 @@ Alternatively, mount a license file and point to its location using `DIVMORA_LIC
 | `DIVMORA_LICENSE_MODE=warn` *(Default)* | Emits structured warnings and stamps `divmora.license.status=unlicensed_production_alert` in OTel telemetry and CloudWatch EMF without dropping logs or disrupting production pipelines. |
 | `DIVMORA_LICENSE_MODE=strict` | Strictly enforces licensing compliance, rejecting invocations if unverified or expired past the 14-day grace period. |
 
+### Offline Certificate Revocation Lists (CRL)
+
+To revoke compromised or superseded licenses in offline, air-gapped, or serverless environments, supply an offline cryptographically signed Revocation List:
+- **Environment Variable**: Set `DIVMORA_CRL="DIVCRL1.<payload>.<sig>"` or `DIVMORA_CRL_FILE="/path/to/crl.divcrl"`.
+- **Lambda Sidecar File**: Package `crl.divcrl` directly at the root of your AWS Lambda deployment archive.
+- **Default System Path**: Mount at `/etc/divmora/crl.divcrl`.
+
+Revoked licenses return `license.ErrLicenseRevoked` and emit alerts in CloudWatch EMF.
+
 ### Managing & Inspecting Licenses (`license-cli`)
 
 Install the official DIVMORA licensing toolkit CLI:
 
 ```bash
-go install github.com/divmora/license-go/cmd/license-cli@v1.0.0
+go install github.com/divmora/license-go/cmd/license-cli@v1.3.1
 ```
 
 Inspect and verify license tokens and quotas:
