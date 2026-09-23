@@ -4,7 +4,12 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -498,5 +503,464 @@ func TestPolicyDegradedFallbackClaims(t *testing.T) {
 	}
 	if !cfg.AllowDegradedMutations {
 		t.Error("expected AllowDegradedMutations to be true")
+	}
+}
+
+func TestOfflineCRL_VerificationAndRevocation(t *testing.T) {
+	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
+
+	activeClaims := &Claims{
+		ID:              "lic_active_001",
+		Customer:        Customer{Name: "Active Corp"},
+		Product:         "otel-aws-log-processor",
+		Plan:            TierEnterprise,
+		IssuedAt:        now,
+		ExpiresAt:       now.AddDate(1, 0, 0),
+		GracePeriodDays: 14,
+	}
+	activeToken := signTestToken(activeClaims, testPrivKey)
+
+	revokedClaims := &Claims{
+		ID:              "lic_revoked_001",
+		Customer:        Customer{Name: "Revoked Corp"},
+		Product:         "otel-aws-log-processor",
+		Plan:            TierEnterprise,
+		IssuedAt:        now,
+		ExpiresAt:       now.AddDate(1, 0, 0),
+		GracePeriodDays: 14,
+	}
+	revokedToken := signTestToken(revokedClaims, testPrivKey)
+
+	// Mint CRL revoking lic_revoked_001
+	crlClaims := RevocationListClaims{
+		ID:       "crl_test_001",
+		IssuedAt: now,
+		Entries: []RevocationEntry{
+			{
+				ID:        "lic_revoked_001",
+				RevokedAt: now,
+				Reason:    "compromised_key",
+			},
+		},
+	}
+	crlToken, err := SignCRL(crlClaims, testPrivKey)
+	if err != nil {
+		t.Fatalf("failed to sign CRL: %v", err)
+	}
+
+	// 1. Before applying CRL, both tokens verify successfully
+	statusActive, err := ParseAndVerifyAt(activeToken, testPubKey, now)
+	if err != nil || !statusActive.Valid {
+		t.Fatalf("expected active token to be valid: %v", err)
+	}
+	statusRevokedBefore, err := ParseAndVerifyAt(revokedToken, testPubKey, now)
+	if err != nil || !statusRevokedBefore.Valid {
+		t.Fatalf("expected revoked token to verify before CRL attached: %v", err)
+	}
+
+	// 2. Attach CRL via programmatic override
+	SetVerificationCRL(crlToken)
+	defer ResetVerificationCRL()
+
+	// Active token still passes
+	statusActiveAfter, err := ParseAndVerifyAt(activeToken, testPubKey, now)
+	if err != nil || !statusActiveAfter.Valid {
+		t.Fatalf("expected active token to still be valid after CRL attached: %v", err)
+	}
+
+	// Revoked token fails with ErrLicenseRevoked
+	statusRevokedAfter, err := ParseAndVerifyAt(revokedToken, testPubKey, now)
+	if err == nil {
+		t.Fatal("expected error verifying revoked token with CRL active")
+	}
+	if !errors.Is(err, ErrLicenseRevoked) {
+		t.Fatalf("expected errors.Is(err, ErrLicenseRevoked), got: %v", err)
+	}
+	if statusRevokedAfter == nil {
+		t.Fatal("expected non-nil ValidationStatus for revoked token")
+	}
+	if statusRevokedAfter.Valid {
+		t.Error("expected status.Valid to be false for revoked license")
+	}
+	if statusRevokedAfter.StatusReason != "revoked" {
+		t.Errorf("got status reason %s, want revoked", statusRevokedAfter.StatusReason)
+	}
+}
+
+func TestOfflineCRL_ArmoredPEM(t *testing.T) {
+	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
+
+	claims := &Claims{
+		ID:        "lic_armored_crl_revoked",
+		Customer:  Customer{Name: "Armored Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierEnterprise,
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+	}
+	token := signTestToken(claims, testPrivKey)
+
+	crlClaims := RevocationListClaims{
+		ID:       "crl_armored_001",
+		IssuedAt: now,
+		Entries: []RevocationEntry{
+			{ID: "lic_armored_crl_revoked", RevokedAt: now, Reason: "payment_failed"},
+		},
+	}
+	armoredCRL, err := SignCRLArmored(crlClaims, testPrivKey)
+	if err != nil {
+		t.Fatalf("failed to sign armored CRL: %v", err)
+	}
+	if !strings.Contains(armoredCRL, "-----BEGIN DIVMORA REVOCATION LIST-----") {
+		t.Fatalf("expected armored PEM header, got: %s", armoredCRL)
+	}
+
+	// Test ParseAndVerifyWithCRL with armored PEM
+	status, err := ParseAndVerifyWithCRL(token, testPubKey, now, armoredCRL)
+	if err == nil {
+		t.Fatal("expected error verifying license revoked by armored CRL")
+	}
+	if !errors.Is(err, ErrLicenseRevoked) {
+		t.Fatalf("expected ErrLicenseRevoked, got: %v", err)
+	}
+	if status.Valid {
+		t.Error("expected status.Valid=false")
+	}
+	if status.StatusReason != "revoked" {
+		t.Errorf("got status reason %s, want revoked", status.StatusReason)
+	}
+}
+
+func TestOfflineCRL_LambdaTaskRootSimulation(t *testing.T) {
+	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
+
+	claims := &Claims{
+		ID:        "lic_lambda_crl_revoked",
+		Customer:  Customer{Name: "Serverless Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierEnterprise,
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+	}
+	token := signTestToken(claims, testPrivKey)
+
+	crlClaims := RevocationListClaims{
+		ID:       "crl_lambda_001",
+		IssuedAt: now,
+		Entries: []RevocationEntry{
+			{ID: "lic_lambda_crl_revoked", RevokedAt: now, Reason: "superseded"},
+		},
+	}
+	crlToken, err := SignCRL(crlClaims, testPrivKey)
+	if err != nil {
+		t.Fatalf("failed to sign CRL: %v", err)
+	}
+
+	// Create simulated LAMBDA_TASK_ROOT directory with crl.divcrl
+	tempTaskRoot := t.TempDir()
+	crlPath := filepath.Join(tempTaskRoot, "crl.divcrl")
+	if err := os.WriteFile(crlPath, []byte(crlToken), 0644); err != nil {
+		t.Fatalf("failed to write CRL to task root: %v", err)
+	}
+
+	t.Setenv("LAMBDA_TASK_ROOT", tempTaskRoot)
+	ResetDefaultValidator()
+	defer ResetDefaultValidator()
+
+	resolved, err := ResolveOfflineCRL()
+	if err != nil {
+		t.Fatalf("failed to resolve offline CRL from LAMBDA_TASK_ROOT: %v", err)
+	}
+	if resolved.FilePath != crlPath {
+		t.Errorf("got resolved file %s, want %s", resolved.FilePath, crlPath)
+	}
+
+	// Verify that ParseAndVerifyAt detects the revocation via the discovered CRL
+	status, err := ParseAndVerifyAt(token, testPubKey, now)
+	if err == nil {
+		t.Fatal("expected error verifying revoked license discovered in LAMBDA_TASK_ROOT")
+	}
+	if !errors.Is(err, ErrLicenseRevoked) {
+		t.Fatalf("expected ErrLicenseRevoked, got: %v", err)
+	}
+	if status.Valid {
+		t.Error("expected valid=false")
+	}
+	if status.StatusReason != "revoked" {
+		t.Errorf("got status reason %s, want revoked", status.StatusReason)
+	}
+}
+
+func TestOfflineCRL_EnvVariables(t *testing.T) {
+	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
+
+	claims := &Claims{
+		ID:        "lic_env_crl_revoked",
+		Customer:  Customer{Name: "Env Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierEnterprise,
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+	}
+	token := signTestToken(claims, testPrivKey)
+
+	crlClaims := RevocationListClaims{
+		ID:       "crl_env_001",
+		IssuedAt: now,
+		Entries: []RevocationEntry{
+			{ID: "lic_env_crl_revoked", RevokedAt: now, Reason: "compliance_violation"},
+		},
+	}
+	crlToken, err := SignCRL(crlClaims, testPrivKey)
+	if err != nil {
+		t.Fatalf("failed to sign CRL: %v", err)
+	}
+
+	// 1. Test DIVMORA_CRL inline token
+	t.Setenv("DIVMORA_CRL", crlToken)
+	ResetDefaultValidator()
+
+	status, err := ParseAndVerifyAt(token, testPubKey, now)
+	if err == nil || !errors.Is(err, ErrLicenseRevoked) {
+		t.Fatalf("expected ErrLicenseRevoked with DIVMORA_CRL env, got: %v", err)
+	}
+	if status.StatusReason != "revoked" {
+		t.Errorf("got status reason %s, want revoked", status.StatusReason)
+	}
+
+	// 2. Test DIVMORA_CRL_FILE file path
+	t.Setenv("DIVMORA_CRL", "")
+	tempFile := filepath.Join(t.TempDir(), "revocations.divcrl")
+	if err := os.WriteFile(tempFile, []byte(crlToken), 0644); err != nil {
+		t.Fatalf("failed to write CRL file: %v", err)
+	}
+	t.Setenv("DIVMORA_CRL_FILE", tempFile)
+	ResetDefaultValidator()
+
+	statusFile, err := ParseAndVerifyAt(token, testPubKey, now)
+	if err == nil || !errors.Is(err, ErrLicenseRevoked) {
+		t.Fatalf("expected ErrLicenseRevoked with DIVMORA_CRL_FILE env, got: %v", err)
+	}
+	if statusFile.StatusReason != "revoked" {
+		t.Errorf("got status reason %s, want revoked", statusFile.StatusReason)
+	}
+}
+
+func TestOfflineCRL_EnforceStrictAndWarn(t *testing.T) {
+	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
+
+	claims := &Claims{
+		ID:        "lic_enforce_crl_test",
+		Customer:  Customer{Name: "Enforce Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierEnterprise,
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+		Scope: &Scope{
+			Accounts: []string{"123456789012"},
+		},
+	}
+	token := signTestToken(claims, testPrivKey)
+
+	crlClaims := RevocationListClaims{
+		ID:       "crl_enforce_001",
+		IssuedAt: now,
+		Entries: []RevocationEntry{
+			{ID: "lic_enforce_crl_test", RevokedAt: now, Reason: "breach_of_contract"},
+		},
+	}
+	crlToken, err := SignCRL(crlClaims, testPrivKey)
+	if err != nil {
+		t.Fatalf("failed to sign CRL: %v", err)
+	}
+
+	// 1. Warn mode with explicit CRL in EnforcementOptions
+	warnOpts := EnforcementOptions{
+		Environment:     "production",
+		LicenseKey:      token,
+		CRL:             crlToken,
+		EnforcementMode: "warn",
+		CallerAccountID: "123456789012",
+		PublicKey:       testPubKey,
+		EvaluationTime:  now,
+	}
+	warnStatus, err := Enforce(warnOpts)
+	if err != nil {
+		t.Fatalf("unexpected error in warn mode: %v", err)
+	}
+	if warnStatus.Valid {
+		t.Error("expected valid=false for revoked license in warn mode")
+	}
+	if warnStatus.StatusReason != "revoked" {
+		t.Errorf("got status reason %s, want revoked", warnStatus.StatusReason)
+	}
+
+	// 2. Strict mode with explicit CRL in EnforcementOptions
+	strictOpts := EnforcementOptions{
+		Environment:     "production",
+		LicenseKey:      token,
+		CRL:             crlToken,
+		EnforcementMode: "strict",
+		CallerAccountID: "123456789012",
+		PublicKey:       testPubKey,
+		EvaluationTime:  now,
+	}
+	_, err = Enforce(strictOpts)
+	if err == nil {
+		t.Fatal("expected error for revoked license in strict mode")
+	}
+	if !errors.Is(err, ErrLicenseRevoked) {
+		t.Fatalf("expected ErrLicenseRevoked in strict mode, got: %v", err)
+	}
+}
+
+func TestOnlineCRL_SyncFromHTTP(t *testing.T) {
+	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
+
+	claims := &Claims{
+		ID:        "lic_online_revoked_1",
+		Customer:  Customer{Name: "Online Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierEnterprise,
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+	}
+	token := signTestToken(claims, testPrivKey)
+
+	crlClaims := RevocationListClaims{
+		ID:       "crl_online_001",
+		IssuedAt: now,
+		Entries: []RevocationEntry{
+			{ID: "lic_online_revoked_1", RevokedAt: now, Reason: "payment_fraud"},
+		},
+	}
+	crlToken, err := SignCRL(crlClaims, testPrivKey)
+	if err != nil {
+		t.Fatalf("failed to sign CRL: %v", err)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"etag-crl-test"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(crlToken))
+	}))
+	defer ts.Close()
+
+	cacheFile := filepath.Join(t.TempDir(), "test-crl.cache")
+
+	status, err := ParseAndVerifyWithCRLURL(token, testPubKey, now, ts.URL, cacheFile)
+	if err == nil {
+		t.Fatal("expected error verifying license revoked via online CRL")
+	}
+	if !errors.Is(err, ErrLicenseRevoked) {
+		t.Fatalf("expected ErrLicenseRevoked, got: %v", err)
+	}
+	if status.Valid {
+		t.Error("expected valid=false")
+	}
+	if status.StatusReason != "revoked" {
+		t.Errorf("got status reason %s, want revoked", status.StatusReason)
+	}
+
+	// Verify disk cache was populated
+	if _, err := os.Stat(cacheFile); os.IsNotExist(err) {
+		t.Errorf("expected cache file %s to be created", cacheFile)
+	}
+}
+
+func TestOnlineCRL_EnvVariable(t *testing.T) {
+	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
+
+	claims := &Claims{
+		ID:        "lic_online_env_revoked",
+		Customer:  Customer{Name: "Env Online Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierEnterprise,
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+	}
+	token := signTestToken(claims, testPrivKey)
+
+	crlClaims := RevocationListClaims{
+		ID:       "crl_online_env_001",
+		IssuedAt: now,
+		Entries: []RevocationEntry{
+			{ID: "lic_online_env_revoked", RevokedAt: now, Reason: "compromised_token"},
+		},
+	}
+	crlToken, err := SignCRL(crlClaims, testPrivKey)
+	if err != nil {
+		t.Fatalf("failed to sign CRL: %v", err)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(crlToken))
+	}))
+	defer ts.Close()
+
+	t.Setenv("DIVMORA_CRL_URL", ts.URL)
+	t.Setenv("DIVMORA_CRL_CACHE_FILE", filepath.Join(t.TempDir(), "env-crl.cache"))
+	ResetDefaultValidator()
+	defer ResetDefaultValidator()
+
+	status, err := ParseAndVerifyAt(token, testPubKey, now)
+	if err == nil || !errors.Is(err, ErrLicenseRevoked) {
+		t.Fatalf("expected ErrLicenseRevoked via DIVMORA_CRL_URL, got: %v", err)
+	}
+	if status.StatusReason != "revoked" {
+		t.Errorf("got status reason %s, want revoked", status.StatusReason)
+	}
+}
+
+func TestOnlineCRL_EnforceStrict(t *testing.T) {
+	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
+
+	claims := &Claims{
+		ID:        "lic_enforce_online_test",
+		Customer:  Customer{Name: "Enforce Online Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierEnterprise,
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+		Scope: &Scope{
+			Accounts: []string{"123456789012"},
+		},
+	}
+	token := signTestToken(claims, testPrivKey)
+
+	crlClaims := RevocationListClaims{
+		ID:       "crl_enforce_online_001",
+		IssuedAt: now,
+		Entries: []RevocationEntry{
+			{ID: "lic_enforce_online_test", RevokedAt: now, Reason: "chargeback"},
+		},
+	}
+	crlToken, err := SignCRL(crlClaims, testPrivKey)
+	if err != nil {
+		t.Fatalf("failed to sign CRL: %v", err)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(crlToken))
+	}))
+	defer ts.Close()
+
+	strictOpts := EnforcementOptions{
+		Environment:     "production",
+		LicenseKey:      token,
+		CRLURL:          ts.URL,
+		EnforcementMode: "strict",
+		CallerAccountID: "123456789012",
+		PublicKey:       testPubKey,
+		EvaluationTime:  now,
+	}
+	_, err = Enforce(strictOpts)
+	if err == nil {
+		t.Fatal("expected error for revoked license with online CRL in strict mode")
+	}
+	if !errors.Is(err, ErrLicenseRevoked) {
+		t.Fatalf("expected ErrLicenseRevoked in strict mode, got: %v", err)
 	}
 }

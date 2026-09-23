@@ -56,6 +56,49 @@ type Manager = liblicense.Manager
 // ManagerConfig provides configuration parameters for the background License Manager.
 type ManagerConfig = liblicense.ManagerConfig
 
+// Certificate Revocation List (CRL) types and errors.
+var (
+	// ErrLicenseRevoked is returned when a license has been explicitly invalidated by a Certificate Revocation List (CRL).
+	ErrLicenseRevoked = liblicense.ErrLicenseRevoked
+
+	// ErrInvalidCRL is returned when a CRL token format, signature, or payload schema is invalid.
+	ErrInvalidCRL = liblicense.ErrInvalidCRL
+
+	// ErrCRLExpired is returned when a CRL has exceeded its NextUpdate validity cutoff.
+	ErrCRLExpired = liblicense.ErrCRLExpired
+
+	// ErrCRLMissing is returned when a Certificate Revocation List is required by policy but not found.
+	ErrCRLMissing = liblicense.ErrCRLMissing
+)
+
+// LicenseRevokedError provides structured details when a license has been invalidated by a CRL.
+type LicenseRevokedError = liblicense.LicenseRevokedError
+
+// ResolvedCRL encapsulates resolved Certificate Revocation List content and provenance.
+type ResolvedCRL = liblicense.ResolvedCRL
+
+// RevocationListClaims contains the authenticated payload of a signed Certificate Revocation List.
+type RevocationListClaims = liblicense.RevocationListClaims
+
+// RevocationEntry represents a single invalidated license record within a CRL.
+type RevocationEntry = liblicense.RevocationEntry
+
+// Online Certificate Revocation List (CRL) synchronization types.
+type (
+	// CRLSyncer manages remote fetching, HTTP conditional caching (ETag/304),
+	// cryptographic verification, and atomic disk persistence of Certificate Revocation Lists.
+	CRLSyncer = liblicense.CRLSyncer
+
+	// CRLSyncConfig defines configuration parameters for dynamic CRL synchronization.
+	CRLSyncConfig = liblicense.CRLSyncConfig
+
+	// SyncResult details the outcome of a synchronization cycle.
+	SyncResult = liblicense.SyncResult
+
+	// SyncSource identifies the provenance of the revocation claims (remote, not_modified, cache).
+	SyncSource = liblicense.SyncSource
+)
+
 // GetClaimsPlan returns the subscription plan/tier from Claims.
 func GetClaimsPlan(c *Claims) string {
 	if c == nil || c.Plan == "" {

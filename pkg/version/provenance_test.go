@@ -340,3 +340,53 @@ func TestEvaluateProvenance_RejectLegacyTwoPartToken(t *testing.T) {
 	assert.Equal(t, version.ProvenanceTamperedSignature, info.Provenance.Status)
 	assert.Contains(t, info.Provenance.Error, "malformed release token: expected canonical DIVREL1 compact token or armored PEM block")
 }
+
+func TestDefaultReleasePublicKey(t *testing.T) {
+	assert.Equal(t, "K8GS3G93kHK5kfav+jxrLwZMIh710EWVyL0tvHLfE5A=", version.DefaultReleasePublicKeyBase64)
+
+	pub, err := version.GetReleaseVerificationPublicKey()
+	require.NoError(t, err)
+	assert.Len(t, pub, ed25519.PublicKeySize)
+	b64Key := base64.StdEncoding.EncodeToString(pub)
+	assert.Equal(t, version.DefaultReleasePublicKeyBase64, b64Key)
+}
+
+func TestParseReleasePrivateKeyAndSigning(t *testing.T) {
+	pub, priv := generateTestReleaseKeyPair(t)
+
+	// 1. From 64-byte private key base64
+	privB64 := base64.StdEncoding.EncodeToString(priv)
+	parsedPriv, err := version.ParseReleasePrivateKey(privB64)
+	require.NoError(t, err)
+	assert.Equal(t, priv, parsedPriv)
+
+	// 2. From 32-byte seed base64
+	seed := priv.Seed()
+	seedB64 := base64.StdEncoding.EncodeToString(seed)
+	parsedFromSeed, err := version.ParseReleasePrivateKey(seedB64)
+	require.NoError(t, err)
+	assert.Equal(t, priv, parsedFromSeed)
+
+	// 3. Via DIVMORA_RELEASE_PRIVATE_KEY environment variable
+	t.Setenv("DIVMORA_RELEASE_PRIVATE_KEY", privB64)
+	envPriv, err := version.GetReleaseSigningPrivateKey()
+	require.NoError(t, err)
+	assert.Equal(t, priv, envPriv)
+
+	// 4. Sign release claims and verify against public key
+	claims := &version.ReleaseClaims{
+		Product:   "otel-aws-log-processor",
+		Version:   "1.3.1",
+		GitCommit: "fedcba987654",
+		BuildDate: "2026-09-22T12:00:00Z",
+		Authority: "DIVMORA Technologies Release Authority",
+	}
+	token, err := version.SignRelease(claims, envPriv)
+	require.NoError(t, err)
+	assert.NotEmpty(t, token)
+
+	verifiedClaims, err := version.ParseAndVerifyReleaseToken(token, pub)
+	require.NoError(t, err)
+	assert.Equal(t, "1.3.1", verifiedClaims.Version)
+	assert.Equal(t, "fedcba987654", verifiedClaims.GitCommit)
+}

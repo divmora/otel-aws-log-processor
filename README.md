@@ -237,12 +237,26 @@ Alternatively, mount a license file and point to its location using `DIVMORA_LIC
 | `DIVMORA_LICENSE_MODE=warn` *(Default)* | Emits structured warnings and stamps `divmora.license.status=unlicensed_production_alert` in OTel telemetry and CloudWatch EMF without dropping logs or disrupting production pipelines. |
 | `DIVMORA_LICENSE_MODE=strict` | Strictly enforces licensing compliance, rejecting invocations if unverified or expired past the 14-day grace period. |
 
+### Certificate Revocation Lists (CRL) — Offline & Online
+
+`otel-aws-log-processor` supports both offline (air-gapped) and online dynamically synchronized Certificate Revocation Lists:
+
+- **Offline CRL (Air-Gapped & Serverless)**:
+  - **Environment Variable**: Set `DIVMORA_CRL="DIVCRL1.<payload>.<sig>"` (token or armored PEM) or `DIVMORA_CRL_FILE="/path/to/crl.divcrl"`.
+  - **Lambda Sidecar File**: Package `crl.divcrl` directly at the root of `lambda.zip` (discovered via `$LAMBDA_TASK_ROOT`).
+  - **Default System Path**: Mount at `/etc/divmora/crl.divcrl`.
+- **Online CRL Synchronization**:
+  - **Remote Endpoint URL**: Set `DIVMORA_CRL_URL="https://crl.divmora.com/otel-aws-log-processor.divcrl"`.
+  - **Resilient Disk Caching**: Downloaded CRLs are verified and cached to disk (`/tmp/divmora-crl.cache` or `DIVMORA_CRL_CACHE_FILE`) with HTTP `ETag` conditional caching to protect against transient network partitions.
+
+Revoked licenses return `license.ErrLicenseRevoked` and emit alerts in CloudWatch EMF.
+
 ### Managing & Inspecting Licenses (`license-cli`)
 
 Install the official DIVMORA licensing toolkit CLI:
 
 ```bash
-go install github.com/divmora/license-go/cmd/license-cli@v1.0.0
+go install github.com/divmora/license-go/cmd/license-cli@v1.3.1
 ```
 
 Inspect and verify license tokens and quotas:

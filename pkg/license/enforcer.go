@@ -100,6 +100,9 @@ type EnforcementOptions struct {
 	Environment       string
 	LicenseKey        string
 	LicenseFile       string
+	CRL               string // Optional explicit inline CRL token or PEM block
+	CRLFile           string // Optional explicit path to CRL file
+	CRLURL            string // Optional explicit remote CRL URL for online synchronization
 	EnforcementMode   string // "warn" (default) or "strict"
 	CallerAccountID   string
 	SourceAccountIDs  []string
@@ -268,9 +271,27 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 	}
 
 	// Parse and verify token
-	status, err := ParseAndVerifyAt(token, opts.PublicKey, evalTime)
+	var status *ValidationStatus
+	if opts.CRL != "" || opts.CRLFile != "" {
+		crlSrc := opts.CRL
+		if crlSrc == "" {
+			crlSrc = opts.CRLFile
+		}
+		status, err = ParseAndVerifyWithCRL(token, opts.PublicKey, evalTime, crlSrc)
+	} else if opts.CRLURL != "" {
+		status, err = ParseAndVerifyWithCRLURL(token, opts.PublicKey, evalTime, opts.CRLURL)
+	} else {
+		status, err = ParseAndVerifyAt(token, opts.PublicKey, evalTime)
+	}
 	if err != nil {
-		slog.Warn("Commercial license verification failed", "error", err)
+		if errors.Is(err, ErrLicenseRevoked) {
+			slog.Error("COMMERCIAL LICENSE REVOKED: Active commercial license has been explicitly invalidated by Certificate Revocation List (CRL)",
+				"error", err,
+				"contact", "licensing@divmora.com",
+			)
+		} else {
+			slog.Warn("Commercial license verification failed", "error", err)
+		}
 		if mode == "strict" {
 			return status, fmt.Errorf("commercial license verification failed: %w", err)
 		}
@@ -370,7 +391,7 @@ func EmitCloudWatchEMF(status *ValidationStatus, env string, recordsProcessed in
 	}
 
 	violations := 0
-	if status != nil && (status.StatusReason == "unlicensed_production" || status.QuotaExceeded) {
+	if status != nil && (status.StatusReason == "unlicensed_production" || status.StatusReason == "revoked" || status.QuotaExceeded) {
 		violations = 1
 	}
 
