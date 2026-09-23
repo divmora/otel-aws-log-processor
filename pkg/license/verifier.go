@@ -159,12 +159,24 @@ func DefaultValidatorOptions() []liblicense.ValidatorOption {
 		opts = append(opts, liblicense.WithBuildDate(releaseTime))
 	}
 
-	// 3. Offline Certificate Revocation List (CRL) Enforcement:
-	// Automatically discovers and attaches offline CRLs across AWS Lambda, container, and CLI environments.
+	// 3. Certificate Revocation List (CRL) Enforcement (Offline & Online):
+	// Priority 1: Check for local offline CRL (bundled sidecars, LAMBDA_TASK_ROOT, DIVMORA_CRL, DIVMORA_CRL_FILE)
 	if resolvedCRL, err := ResolveOfflineCRL(); err == nil && resolvedCRL != nil && strings.TrimSpace(resolvedCRL.Content) != "" {
 		opts = append(opts, liblicense.WithRevocationList(resolvedCRL.Content))
+	} else if crlURL := strings.TrimSpace(os.Getenv("DIVMORA_CRL_URL")); crlURL != "" {
+		// Priority 2: Online CRL synchronization from remote distribution endpoint with /tmp disk caching
+		cachePath := strings.TrimSpace(os.Getenv("DIVMORA_CRL_CACHE_FILE"))
+		if cachePath == "" {
+			cachePath = filepath.Join(os.TempDir(), "divmora-crl.cache")
+		}
+		opts = append(opts,
+			liblicense.WithCRLURL(crlURL,
+				liblicense.WithCRLSyncCacheFile(cachePath),
+				liblicense.WithCRLSyncTimeout(5*time.Second),
+			),
+		)
 	} else {
-		// Enable auto-resolved CRL discovery (DIVMORA_CRL, DIVMORA_CRL_FILE, /etc/divmora/crl.divcrl)
+		// Priority 3: Auto-resolved CRL discovery (supports license token crl_url claims and remote fallback)
 		opts = append(opts, liblicense.WithAutoResolvedRevocationList(false))
 	}
 
@@ -280,6 +292,53 @@ func ParseAndVerifyWithCRL(token string, pubKey ed25519.PublicKey, evalTime time
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize license validator with CRL: %w", err)
+	}
+
+	return verifyWithValidator(token, validator, evalTime)
+}
+
+// ParseAndVerifyWithCRLURL verifies a license token using online CRL synchronization from a remote distribution URL.
+// It caches verified revocation lists to disk (defaulting to /tmp/divmora-crl.cache) for air-gap and network failure resilience.
+func ParseAndVerifyWithCRLURL(token string, pubKey ed25519.PublicKey, evalTime time.Time, crlURL string, cacheFilePath ...string) (*ValidationStatus, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, errors.New("license token cannot be empty")
+	}
+
+	crlURL = strings.TrimSpace(crlURL)
+	if crlURL == "" {
+		return nil, errors.New("CRL URL cannot be empty")
+	}
+
+	cacheFile := ""
+	for _, c := range cacheFilePath {
+		if strings.TrimSpace(c) != "" {
+			cacheFile = strings.TrimSpace(c)
+			break
+		}
+	}
+	if cacheFile == "" {
+		cacheFile = filepath.Join(os.TempDir(), "divmora-crl.cache")
+	}
+
+	vOpts := DefaultValidatorOptions()
+	vOpts = append(vOpts,
+		liblicense.WithCRLURL(crlURL,
+			liblicense.WithCRLSyncCacheFile(cacheFile),
+			liblicense.WithCRLSyncTimeout(5*time.Second),
+		),
+		liblicense.WithRequireRevocationList(true),
+	)
+
+	var validator *liblicense.Validator
+	var err error
+	if len(pubKey) > 0 {
+		validator, err = liblicense.NewValidator(pubKey, vOpts...)
+	} else {
+		validator, err = liblicense.NewValidatorWithFallbackKey(DefaultPublicKeyBase64, vOpts...)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize license validator with CRL URL: %w", err)
 	}
 
 	return verifyWithValidator(token, validator, evalTime)

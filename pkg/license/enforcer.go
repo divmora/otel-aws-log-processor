@@ -102,6 +102,7 @@ type EnforcementOptions struct {
 	LicenseFile       string
 	CRL               string // Optional explicit inline CRL token or PEM block
 	CRLFile           string // Optional explicit path to CRL file
+	CRLURL            string // Optional explicit remote CRL URL for online synchronization
 	EnforcementMode   string // "warn" (default) or "strict"
 	CallerAccountID   string
 	SourceAccountIDs  []string
@@ -277,6 +278,8 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 			crlSrc = opts.CRLFile
 		}
 		status, err = ParseAndVerifyWithCRL(token, opts.PublicKey, evalTime, crlSrc)
+	} else if opts.CRLURL != "" {
+		status, err = ParseAndVerifyWithCRLURL(token, opts.PublicKey, evalTime, opts.CRLURL)
 	} else {
 		status, err = ParseAndVerifyAt(token, opts.PublicKey, evalTime)
 	}

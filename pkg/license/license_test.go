@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -806,6 +808,157 @@ func TestOfflineCRL_EnforceStrictAndWarn(t *testing.T) {
 	_, err = Enforce(strictOpts)
 	if err == nil {
 		t.Fatal("expected error for revoked license in strict mode")
+	}
+	if !errors.Is(err, ErrLicenseRevoked) {
+		t.Fatalf("expected ErrLicenseRevoked in strict mode, got: %v", err)
+	}
+}
+
+func TestOnlineCRL_SyncFromHTTP(t *testing.T) {
+	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
+
+	claims := &Claims{
+		ID:        "lic_online_revoked_1",
+		Customer:  Customer{Name: "Online Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierEnterprise,
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+	}
+	token := signTestToken(claims, testPrivKey)
+
+	crlClaims := RevocationListClaims{
+		ID:       "crl_online_001",
+		IssuedAt: now,
+		Entries: []RevocationEntry{
+			{ID: "lic_online_revoked_1", RevokedAt: now, Reason: "payment_fraud"},
+		},
+	}
+	crlToken, err := SignCRL(crlClaims, testPrivKey)
+	if err != nil {
+		t.Fatalf("failed to sign CRL: %v", err)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"etag-crl-test"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(crlToken))
+	}))
+	defer ts.Close()
+
+	cacheFile := filepath.Join(t.TempDir(), "test-crl.cache")
+
+	status, err := ParseAndVerifyWithCRLURL(token, testPubKey, now, ts.URL, cacheFile)
+	if err == nil {
+		t.Fatal("expected error verifying license revoked via online CRL")
+	}
+	if !errors.Is(err, ErrLicenseRevoked) {
+		t.Fatalf("expected ErrLicenseRevoked, got: %v", err)
+	}
+	if status.Valid {
+		t.Error("expected valid=false")
+	}
+	if status.StatusReason != "revoked" {
+		t.Errorf("got status reason %s, want revoked", status.StatusReason)
+	}
+
+	// Verify disk cache was populated
+	if _, err := os.Stat(cacheFile); os.IsNotExist(err) {
+		t.Errorf("expected cache file %s to be created", cacheFile)
+	}
+}
+
+func TestOnlineCRL_EnvVariable(t *testing.T) {
+	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
+
+	claims := &Claims{
+		ID:        "lic_online_env_revoked",
+		Customer:  Customer{Name: "Env Online Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierEnterprise,
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+	}
+	token := signTestToken(claims, testPrivKey)
+
+	crlClaims := RevocationListClaims{
+		ID:       "crl_online_env_001",
+		IssuedAt: now,
+		Entries: []RevocationEntry{
+			{ID: "lic_online_env_revoked", RevokedAt: now, Reason: "compromised_token"},
+		},
+	}
+	crlToken, err := SignCRL(crlClaims, testPrivKey)
+	if err != nil {
+		t.Fatalf("failed to sign CRL: %v", err)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(crlToken))
+	}))
+	defer ts.Close()
+
+	t.Setenv("DIVMORA_CRL_URL", ts.URL)
+	t.Setenv("DIVMORA_CRL_CACHE_FILE", filepath.Join(t.TempDir(), "env-crl.cache"))
+	ResetDefaultValidator()
+	defer ResetDefaultValidator()
+
+	status, err := ParseAndVerifyAt(token, testPubKey, now)
+	if err == nil || !errors.Is(err, ErrLicenseRevoked) {
+		t.Fatalf("expected ErrLicenseRevoked via DIVMORA_CRL_URL, got: %v", err)
+	}
+	if status.StatusReason != "revoked" {
+		t.Errorf("got status reason %s, want revoked", status.StatusReason)
+	}
+}
+
+func TestOnlineCRL_EnforceStrict(t *testing.T) {
+	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
+
+	claims := &Claims{
+		ID:        "lic_enforce_online_test",
+		Customer:  Customer{Name: "Enforce Online Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierEnterprise,
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+		Scope: &Scope{
+			Accounts: []string{"123456789012"},
+		},
+	}
+	token := signTestToken(claims, testPrivKey)
+
+	crlClaims := RevocationListClaims{
+		ID:       "crl_enforce_online_001",
+		IssuedAt: now,
+		Entries: []RevocationEntry{
+			{ID: "lic_enforce_online_test", RevokedAt: now, Reason: "chargeback"},
+		},
+	}
+	crlToken, err := SignCRL(crlClaims, testPrivKey)
+	if err != nil {
+		t.Fatalf("failed to sign CRL: %v", err)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(crlToken))
+	}))
+	defer ts.Close()
+
+	strictOpts := EnforcementOptions{
+		Environment:     "production",
+		LicenseKey:      token,
+		CRLURL:          ts.URL,
+		EnforcementMode: "strict",
+		CallerAccountID: "123456789012",
+		PublicKey:       testPubKey,
+		EvaluationTime:  now,
+	}
+	_, err = Enforce(strictOpts)
+	if err == nil {
+		t.Fatal("expected error for revoked license with online CRL in strict mode")
 	}
 	if !errors.Is(err, ErrLicenseRevoked) {
 		t.Fatalf("expected ErrLicenseRevoked in strict mode, got: %v", err)

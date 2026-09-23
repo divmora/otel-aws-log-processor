@@ -83,6 +83,22 @@ type RevocationListClaims = liblicense.RevocationListClaims
 // RevocationEntry represents a single invalidated license record within a CRL.
 type RevocationEntry = liblicense.RevocationEntry
 
+// Online Certificate Revocation List (CRL) synchronization types.
+type (
+	// CRLSyncer manages remote fetching, HTTP conditional caching (ETag/304),
+	// cryptographic verification, and atomic disk persistence of Certificate Revocation Lists.
+	CRLSyncer = liblicense.CRLSyncer
+
+	// CRLSyncConfig defines configuration parameters for dynamic CRL synchronization.
+	CRLSyncConfig = liblicense.CRLSyncConfig
+
+	// SyncResult details the outcome of a synchronization cycle.
+	SyncResult = liblicense.SyncResult
+
+	// SyncSource identifies the provenance of the revocation claims (remote, not_modified, cache).
+	SyncSource = liblicense.SyncSource
+)
+
 // GetClaimsPlan returns the subscription plan/tier from Claims.
 func GetClaimsPlan(c *Claims) string {
 	if c == nil || c.Plan == "" {
