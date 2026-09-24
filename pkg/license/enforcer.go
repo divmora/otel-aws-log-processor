@@ -435,6 +435,7 @@ func EmitCloudWatchEMF(status *ValidationStatus, env string, recordsProcessed in
 					"Namespace": "Divmora/LogProcessor",
 					"Dimensions": [][]string{
 						{"Environment", "Status"},
+						{"Environment"},
 					},
 					"Metrics": []map[string]string{
 						{"Name": "RecordsProcessed", "Unit": "Count"},
