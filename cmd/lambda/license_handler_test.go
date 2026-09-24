@@ -48,19 +48,49 @@ func TestHandlerLicensingModes(t *testing.T) {
 		}
 	})
 
-	// 2. Test Production Strict Mode without License
-	t.Run("ProductionStrictWithoutLicense", func(t *testing.T) {
+	// 2. Test Production Strict Mode without License (Default Discard Action - Suppresses SQS Retry Loop)
+	t.Run("ProductionStrictWithoutLicense_DiscardRetrySuppression", func(t *testing.T) {
 		t.Setenv("ENVIRONMENT", "production")
 		t.Setenv("DIVMORA_LICENSE_MODE", "strict")
 		t.Setenv("DIVMORA_LICENSE_KEY", "")
+		t.Setenv("DIVMORA_LICENSE_FAILURE_ACTION", "discard")
 
 		sqsEvent := events.SQSEvent{
-			Records: []events.SQSMessage{},
+			Records: []events.SQSMessage{
+				{MessageId: "msg-1"},
+				{MessageId: "msg-2"},
+			},
 		}
 
-		_, err := handler(ctx, sqsEvent)
-		if err == nil {
-			t.Error("expected error for unlicensed production in strict mode")
+		resp, err := handler(ctx, sqsEvent)
+		if err != nil {
+			t.Fatalf("expected nil error to suppress SQS retry loop, got: %v", err)
+		}
+		if len(resp.BatchItemFailures) != 0 {
+			t.Errorf("expected 0 batch item failures (discard mode deletes messages to prevent retry loop), got %d", len(resp.BatchItemFailures))
+		}
+	})
+
+	// 2b. Test Production Strict Mode without License with DLQ Action
+	t.Run("ProductionStrictWithoutLicense_DLQAction", func(t *testing.T) {
+		t.Setenv("ENVIRONMENT", "production")
+		t.Setenv("DIVMORA_LICENSE_MODE", "strict")
+		t.Setenv("DIVMORA_LICENSE_KEY", "")
+		t.Setenv("DIVMORA_LICENSE_FAILURE_ACTION", "dlq")
+
+		sqsEvent := events.SQSEvent{
+			Records: []events.SQSMessage{
+				{MessageId: "msg-1"},
+				{MessageId: "msg-2"},
+			},
+		}
+
+		resp, err := handler(ctx, sqsEvent)
+		if err != nil {
+			t.Fatalf("expected nil error (container does not crash), got: %v", err)
+		}
+		if len(resp.BatchItemFailures) != 2 {
+			t.Errorf("expected 2 batch item failures for DLQ routing, got %d", len(resp.BatchItemFailures))
 		}
 	})
 

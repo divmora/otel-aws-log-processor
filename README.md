@@ -78,6 +78,7 @@ The Lambda handler is configured entirely via environment variables:
 | `ENVIRONMENT` | Environment name (`development`, `staging`, `production`, etc.) | `production` |
 | `DIVMORA_LICENSE_KEY` | Commercial Ed25519 license token (required for production) | `""` |
 | `DIVMORA_LICENSE_MODE` | Production enforcement mode (`warn` non-blocking or `strict`) | `warn` |
+| `DIVMORA_LICENSE_FAILURE_ACTION` | SQS behavior on strict license failure (`discard` to stop retry loops, or `dlq`) | `discard` |
 
 ---
 
@@ -237,6 +238,15 @@ Alternatively, mount a license file and point to its location using `DIVMORA_LIC
 | :--- | :--- |
 | `DIVMORA_LICENSE_MODE=warn` *(Default)* | Emits structured warnings and stamps `divmora.license.status=unlicensed_production_alert` in OTel telemetry and CloudWatch EMF without dropping logs or disrupting production pipelines. |
 | `DIVMORA_LICENSE_MODE=strict` | Strictly enforces licensing compliance, rejecting invocations if unverified or expired past the 14-day grace period. |
+
+#### Serverless SQS Retry Loop Prevention
+
+In AWS Lambda with SQS triggers, returning an unhandled error to the runtime causes SQS to treat the batch as a transient failure, repeatedly redriving messages and inflating Lambda execution costs.
+
+To prevent infinite retry storms on deterministic license failures in `strict` mode:
+- **Pre-flight Fast Fail**: Baseline license compliance is verified *before* downloading S3 log files, eliminating wasted S3 GET API calls and data transfer fees.
+- **`DIVMORA_LICENSE_FAILURE_ACTION=discard` *(Default)***: Cleanly acknowledges and deletes unprocessable messages from the SQS queue, immediately halting the retry storm while emitting CloudWatch EMF violation metrics and structured error logs.
+- **`DIVMORA_LICENSE_FAILURE_ACTION=dlq`**: Marks batch items in `BatchItemFailures` so SQS cleanly advances redrive counts to the Dead Letter Queue without crashing the Lambda container.
 
 ### Certificate Revocation Lists (CRL) — Offline & Online
 

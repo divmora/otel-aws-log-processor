@@ -371,6 +371,16 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 	return status, nil
 }
 
+// PreflightEnforce performs a fast baseline license compliance check
+// (environment, token validity, expiration, revocation, and caller account authorization)
+// before downloading and decompressing S3 log objects.
+func PreflightEnforce(opts EnforcementOptions) (*ValidationStatus, error) {
+	opts.SourceAccountIDs = nil
+	opts.ExercisedFeatures = nil
+	opts.BatchRecordCount = 0
+	return Enforce(opts)
+}
+
 // AppendLicenseAttributes stamps telemetry metadata into OpenTelemetry Resource Attributes.
 func AppendLicenseAttributes(attrs []model.OTelAttribute, status *ValidationStatus, env string, accountID string) []model.OTelAttribute {
 	if status == nil {
@@ -403,10 +413,6 @@ func AppendLicenseAttributes(attrs []model.OTelAttribute, status *ValidationStat
 // EmitCloudWatchEMF writes an asynchronous CloudWatch Embedded Metric Format (EMF) log
 // to stdout with zero API latency.
 func EmitCloudWatchEMF(status *ValidationStatus, env string, recordsProcessed int) {
-	if recordsProcessed <= 0 {
-		return
-	}
-
 	statusTag := "unknown"
 	if status != nil {
 		statusTag = status.StatusReason
@@ -417,6 +423,10 @@ func EmitCloudWatchEMF(status *ValidationStatus, env string, recordsProcessed in
 		violations = 1
 	}
 
+	if recordsProcessed <= 0 && violations == 0 {
+		return
+	}
+
 	emf := map[string]any{
 		"_aws": map[string]any{
 			"Timestamp": time.Now().UnixMilli(),
@@ -425,6 +435,7 @@ func EmitCloudWatchEMF(status *ValidationStatus, env string, recordsProcessed in
 					"Namespace": "Divmora/LogProcessor",
 					"Dimensions": [][]string{
 						{"Environment", "Status"},
+						{"Environment"},
 					},
 					"Metrics": []map[string]string{
 						{"Name": "RecordsProcessed", "Unit": "Count"},

@@ -998,6 +998,9 @@ Resources:
           MAX_BATCH_SIZE: 500
           MAX_RETRIES: 3
           MAX_CONCURRENT: 10
+          DIVMORA_LICENSE_KEY: ""
+          DIVMORA_LICENSE_MODE: warn
+          DIVMORA_LICENSE_FAILURE_ACTION: discard
       Policies:
         - S3ReadPolicy:
             BucketName: "*"
@@ -1350,6 +1353,18 @@ otlp_config:
                 <td class="px-4 py-3 text-slate-400">warn</td>
                 <td class="px-4 py-3 text-emerald-400">string</td>
                 <td class="px-4 py-3 text-slate-300 font-sans">Licensing enforcement mode in production: <code class="text-amber-300 font-mono">warn</code> (non-blocking diagnostics with telemetry markers) or <code class="text-rose-300 font-mono">strict</code> (blocks execution if unverified).</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 text-brand-400 font-semibold">DIVMORA_LICENSE_FAILURE_ACTION</td>
+                <td class="px-4 py-3 text-slate-400">discard</td>
+                <td class="px-4 py-3 text-emerald-400">string</td>
+                <td class="px-4 py-3 text-slate-300 font-sans">Behavior on deterministic license compliance failure in strict mode: <code class="text-emerald-300 font-mono">discard</code> (silently acknowledge to prevent infinite SQS retry billing loops) or <code class="text-amber-300 font-mono">dlq</code> (route to Dead Letter Queue without container crash).</td>
+              </tr>
+              <tr>
+                <td class="px-4 py-3 text-brand-400 font-semibold">DIVMORA_CRL_URL</td>
+                <td class="px-4 py-3 text-slate-500">""</td>
+                <td class="px-4 py-3 text-emerald-400">string (URL)</td>
+                <td class="px-4 py-3 text-slate-300 font-sans">Optional HTTPS endpoint for real-time Certificate Revocation List (CRL) synchronization with automated disk caching.</td>
               </tr>
             </tbody>
           </table>

@@ -1135,3 +1135,80 @@ func TestFeatureEntitlements_Enforce(t *testing.T) {
 		t.Fatalf("expected Enterprise to permit Parquet and cross-account: %v", err)
 	}
 }
+
+func TestIsDeterministicLicenseError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"ErrCommercialLicenseRequired", ErrCommercialLicenseRequired, true},
+		{"ErrFeatureNotEntitled", ErrFeatureNotEntitled, true},
+		{"ErrLicenseRevoked", ErrLicenseRevoked, true},
+		{"AccountMismatch", fmt.Errorf("COMMERCIAL LICENSE ACCOUNT MISMATCH: not authorized"), true},
+		{"FeatureUnentitledString", fmt.Errorf("COMMERCIAL LICENSE FEATURE NOT ENTITLED: parser.cloudfront.parquet"), true},
+		{"TransientNetworkTimeout", errors.New("dial tcp 10.0.0.1:4318: i/o timeout"), false},
+		{"S3ClientNotFound", errors.New("NoSuchKey: The specified key does not exist"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := IsDeterministicLicenseError(tt.err)
+			if got != tt.want {
+				t.Errorf("IsDeterministicLicenseError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPreflightEnforce(t *testing.T) {
+	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
+
+	// 1. Non-production permits preflight free of charge
+	statusNonProd, err := PreflightEnforce(EnforcementOptions{
+		Environment: "staging",
+	})
+	if err != nil || !statusNonProd.Valid {
+		t.Fatalf("expected staging preflight to be valid: %v", err)
+	}
+
+	// 2. Strict production without license fails preflight with deterministic error
+	statusStrictNoLic, err := PreflightEnforce(EnforcementOptions{
+		Environment:     "production",
+		EnforcementMode: "strict",
+		LicenseKey:      "",
+	})
+	if err == nil {
+		t.Fatal("expected error in strict production preflight without license")
+	}
+	if !IsDeterministicLicenseError(err) {
+		t.Fatalf("expected IsDeterministicLicenseError to be true, got err: %v", err)
+	}
+	if statusStrictNoLic != nil && statusStrictNoLic.Valid {
+		t.Error("expected statusStrictNoLic.Valid to be false")
+	}
+
+	// 3. Strict production with valid license passes preflight
+	validClaims := &Claims{
+		ID:        "lic_preflight_test",
+		Customer:  Customer{Name: "Preflight Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierPro,
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+		Scope:     &Scope{Accounts: []string{"123456789012"}},
+	}
+	token := signTestToken(validClaims, testPrivKey)
+	statusValid, err := PreflightEnforce(EnforcementOptions{
+		Environment:     "production",
+		EnforcementMode: "strict",
+		LicenseKey:      token,
+		CallerAccountID: "123456789012",
+		PublicKey:       testPubKey,
+		EvaluationTime:  now,
+	})
+	if err != nil || !statusValid.Valid {
+		t.Fatalf("expected valid token to pass preflight: %v", err)
+	}
+}

@@ -95,24 +95,64 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 		BatchItemFailures: []events.SQSBatchItemFailure{},
 	}
 
+	logger.Info("Lambda triggered", "sqs_record_count", len(sqsEvent.Records))
+	if len(sqsEvent.Records) == 0 {
+		return response, nil
+	}
+
+	failureAction := strings.ToLower(utils.GetEnv("DIVMORA_LICENSE_FAILURE_ACTION", "discard"))
+	callerAccount := license.ExtractCallerAccountID(ctx)
+	env := license.DetectEnvironment()
+
+	var authTime time.Time
+	for _, record := range sqsEvent.Records {
+		if sentTs, ok := record.Attributes["SentTimestamp"]; ok && sentTs != "" {
+			if ms, err := strconv.ParseInt(sentTs, 10, 64); err == nil && authTime.IsZero() {
+				authTime = time.UnixMilli(ms).UTC()
+				break
+			}
+		}
+	}
+
+	// 1. Preflight baseline license verification
+	// Checks token existence, signature, expiration, and caller AWS account before downloading S3 files.
+	preflightStatus, preflightErr := license.PreflightEnforce(license.EnforcementOptions{
+		Context:           ctx,
+		Environment:       env,
+		CallerAccountID:   callerAccount,
+		AuthoritativeTime: authTime,
+	})
+	if preflightErr != nil && license.IsDeterministicLicenseError(preflightErr) {
+		logger.Error("Preflight license verification failed in strict mode: terminating batch processing to prevent SQS retry loop",
+			"error", preflightErr,
+			"environment", env,
+			"caller_account", callerAccount,
+			"action", failureAction,
+		)
+		license.EmitCloudWatchEMF(preflightStatus, env, 0)
+
+		if failureAction == "dlq" {
+			for _, rec := range sqsEvent.Records {
+				response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{
+					ItemIdentifier: rec.MessageId,
+				})
+			}
+		} else {
+			response.BatchItemFailures = []events.SQSBatchItemFailure{}
+		}
+		// Return nil error to SQS poller so SQS does not treat invocation as a crash
+		return response, nil
+	}
+
 	var allEntries []processor.LogAdapter
 	var lastBucket string
-	var authTime time.Time
 	featureSet := make(map[string]struct{})
-
-	logger.Info("Lambda triggered", "sqs_record_count", len(sqsEvent.Records))
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	sem := make(chan struct{}, maxConcurrent)
 
 	for _, record := range sqsEvent.Records {
-		if sentTs, ok := record.Attributes["SentTimestamp"]; ok && sentTs != "" {
-			if ms, err := strconv.ParseInt(sentTs, 10, 64); err == nil && authTime.IsZero() {
-				authTime = time.UnixMilli(ms).UTC()
-			}
-		}
-
 		wg.Add(1)
 		go func(record events.SQSMessage) {
 			defer wg.Done()
@@ -218,9 +258,6 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 		sourceAccounts = append(sourceAccounts, acc)
 	}
 
-	callerAccount := license.ExtractCallerAccountID(ctx)
-	env := license.DetectEnvironment()
-
 	// Detect cross-account log ingestion feature
 	if callerAccount != "" {
 		for _, acc := range sourceAccounts {
@@ -249,6 +286,26 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 		AuthoritativeTime: authTime,
 	})
 	if err != nil {
+		if license.IsDeterministicLicenseError(err) {
+			logger.Error("Deterministic license compliance failure in strict mode: aborting batch to prevent SQS retry loop",
+				"error", err,
+				"environment", env,
+				"caller_account", callerAccount,
+				"action", failureAction,
+			)
+			license.EmitCloudWatchEMF(licStatus, env, len(allEntries))
+
+			if failureAction == "dlq" {
+				for _, rec := range sqsEvent.Records {
+					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{
+						ItemIdentifier: rec.MessageId,
+					})
+				}
+			} else {
+				response.BatchItemFailures = []events.SQSBatchItemFailure{}
+			}
+			return response, nil
+		}
 		logger.Error("License enforcement error", "error", err)
 		return response, err
 	}

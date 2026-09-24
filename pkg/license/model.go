@@ -1,6 +1,9 @@
 package license
 
 import (
+	"errors"
+	"strings"
+
 	liblicense "github.com/divmora/license-go/pkg/license"
 )
 
@@ -214,4 +217,33 @@ func AssertFeature(status *ValidationStatus, env string, feature string) error {
 // HasFeature returns true if the feature is entitled under the validation status and environment.
 func HasFeature(status *ValidationStatus, env string, feature string) bool {
 	return AssertFeature(status, env, feature) == nil
+}
+
+// IsDeterministicLicenseError reports whether an error represents a permanent license compliance failure
+// that cannot be resolved by an immediate retry (e.g. missing license, expired license, revoked license,
+// account mismatch, or unentitled feature). In serverless execution (AWS Lambda with SQS), such errors
+// must not trigger unhandled SQS retries to prevent infinite retry loops and billing inflation.
+func IsDeterministicLicenseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrCommercialLicenseRequired) ||
+		errors.Is(err, ErrFeatureNotEntitled) ||
+		errors.Is(err, ErrLicenseRevoked) ||
+		errors.Is(err, liblicense.ErrExpired) ||
+		errors.Is(err, liblicense.ErrNotYetValid) ||
+		errors.Is(err, liblicense.ErrProductMismatch) ||
+		errors.Is(err, liblicense.ErrInvalidSignature) ||
+		errors.Is(err, liblicense.ErrInvalidLicenseFormat) ||
+		errors.Is(err, liblicense.ErrLicenseNotFound) ||
+		errors.Is(err, liblicense.ErrScopeMismatch) ||
+		errors.Is(err, liblicense.ErrVersionNotEntitled) ||
+		errors.Is(err, liblicense.ErrMaintenanceExpired) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "COMMERCIAL LICENSE") ||
+		strings.Contains(msg, "license verification failed") ||
+		strings.Contains(msg, "ACCOUNT MISMATCH") ||
+		strings.Contains(msg, "not authorized")
 }
