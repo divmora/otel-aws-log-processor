@@ -964,3 +964,174 @@ func TestOnlineCRL_EnforceStrict(t *testing.T) {
 		t.Fatalf("expected ErrLicenseRevoked in strict mode, got: %v", err)
 	}
 }
+
+func TestFeatureEntitlements_AssertFeature(t *testing.T) {
+	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
+
+	// 1. Non-production environment permits all features free of charge
+	devStatus := &ValidationStatus{Valid: true, StatusReason: "non_prod_free"}
+	if err := AssertFeature(devStatus, "dev", FeatureParserCloudFrontParquet); err != nil {
+		t.Fatalf("expected non-prod to permit parquet, got: %v", err)
+	}
+	if !HasFeature(devStatus, "dev", FeatureScopeCrossAccount) {
+		t.Fatal("expected HasFeature to return true in dev")
+	}
+
+	// 2. Unlicensed in production returns ErrCommercialLicenseRequired
+	unlicensedStatus := &ValidationStatus{Valid: false, StatusReason: "unlicensed_production"}
+	if err := AssertFeature(unlicensedStatus, "production", FeatureParserALB); !errors.Is(err, ErrCommercialLicenseRequired) {
+		t.Fatalf("expected ErrCommercialLicenseRequired, got: %v", err)
+	}
+
+	// 3. Pro Plan license
+	proClaims := &Claims{
+		ID:        "lic_pro_test",
+		Customer:  Customer{Name: "Pro Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierPro,
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+		Scope:     &Scope{Accounts: []string{"123456789012"}},
+	}
+	proStatus := &ValidationStatus{Valid: true, Claims: proClaims}
+
+	// Standard Pro features permitted
+	for _, feat := range []string{FeatureParserALB, FeatureParserNLB, FeatureParserCloudFrontGzip, FeatureParserWAF, FeatureSenderOTLPHTTP} {
+		if err := AssertFeature(proStatus, "production", feat); err != nil {
+			t.Errorf("expected Pro to permit %s, got: %v", feat, err)
+		}
+	}
+
+	// Enterprise features denied on Pro
+	for _, feat := range []string{FeatureParserCloudFrontParquet, FeatureScopeCrossAccount, FeatureSenderOTLPGRPC, FeatureEnrichmentGeoIP} {
+		if err := AssertFeature(proStatus, "production", feat); !errors.Is(err, ErrFeatureNotEntitled) {
+			t.Errorf("expected ErrFeatureNotEntitled for %s on Pro, got: %v", feat, err)
+		}
+	}
+
+	// 4. Enterprise Plan license permits all features
+	entClaims := &Claims{
+		ID:        "lic_ent_test",
+		Customer:  Customer{Name: "Enterprise Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierEnterprise,
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+		Scope:     &Scope{Accounts: []string{"123456789012"}},
+	}
+	entStatus := &ValidationStatus{Valid: true, Claims: entClaims}
+	for _, feat := range []string{FeatureParserALB, FeatureParserCloudFrontParquet, FeatureScopeCrossAccount, FeatureSenderOTLPGRPC, FeatureEnrichmentGeoIP} {
+		if err := AssertFeature(entStatus, "production", feat); err != nil {
+			t.Errorf("expected Enterprise to permit %s, got: %v", feat, err)
+		}
+	}
+
+	// 5. Explicit feature add-on on Pro license
+	proAddonClaims := &Claims{
+		ID:        "lic_pro_addon_test",
+		Customer:  Customer{Name: "Pro Addon Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierPro,
+		Features:  []string{FeatureParserCloudFrontParquet},
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+		Scope:     &Scope{Accounts: []string{"123456789012"}},
+	}
+	proAddonStatus := &ValidationStatus{Valid: true, Claims: proAddonClaims}
+	if err := AssertFeature(proAddonStatus, "production", FeatureParserCloudFrontParquet); err != nil {
+		t.Fatalf("expected explicit feature grant to permit parquet on Pro, got: %v", err)
+	}
+}
+
+func TestFeatureEntitlements_Enforce(t *testing.T) {
+	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
+
+	proClaims := &Claims{
+		ID:        "lic_pro_enforce",
+		Customer:  Customer{Name: "Pro Enforce Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierPro,
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+		Scope:     &Scope{Accounts: []string{"123456789012"}},
+	}
+	proToken := signTestToken(proClaims, testPrivKey)
+
+	// Pro plan exercising standard ALB feature -> Success
+	status, err := Enforce(EnforcementOptions{
+		Environment:       "production",
+		LicenseKey:        proToken,
+		EnforcementMode:   "strict",
+		CallerAccountID:   "123456789012",
+		PublicKey:         testPubKey,
+		EvaluationTime:    now,
+		ExercisedFeatures: []string{FeatureParserALB, FeatureParserWAF},
+	})
+	if err != nil || !status.Valid {
+		t.Fatalf("expected Pro with standard features to be valid: %v", err)
+	}
+
+	// Pro plan exercising unentitled Parquet feature in warn mode -> Warns but no error
+	warnStatus, err := Enforce(EnforcementOptions{
+		Environment:       "production",
+		LicenseKey:        proToken,
+		EnforcementMode:   "warn",
+		CallerAccountID:   "123456789012",
+		PublicKey:         testPubKey,
+		EvaluationTime:    now,
+		ExercisedFeatures: []string{FeatureParserCloudFrontParquet},
+	})
+	if err != nil {
+		t.Fatalf("expected no error in warn mode for unentitled feature: %v", err)
+	}
+	if warnStatus.Valid {
+		t.Error("expected status.Valid to be false in warn mode for unentitled feature")
+	}
+	if warnStatus.StatusReason != "feature_not_entitled" {
+		t.Errorf("got status reason %s, want feature_not_entitled", warnStatus.StatusReason)
+	}
+
+	// Pro plan exercising unentitled Parquet feature in strict mode -> Returns error
+	strictStatus, err := Enforce(EnforcementOptions{
+		Environment:       "production",
+		LicenseKey:        proToken,
+		EnforcementMode:   "strict",
+		CallerAccountID:   "123456789012",
+		PublicKey:         testPubKey,
+		EvaluationTime:    now,
+		ExercisedFeatures: []string{FeatureParserCloudFrontParquet},
+	})
+	if err == nil {
+		t.Fatal("expected error in strict mode for unentitled feature")
+	}
+	if !errors.Is(err, ErrFeatureNotEntitled) {
+		t.Fatalf("expected errors.Is(err, ErrFeatureNotEntitled), got: %v", err)
+	}
+	if strictStatus != nil && strictStatus.Valid {
+		t.Error("expected strictStatus.Valid to be false")
+	}
+
+	// Enterprise plan exercising Parquet in strict mode -> Success
+	entClaims := &Claims{
+		ID:        "lic_ent_enforce",
+		Customer:  Customer{Name: "Ent Enforce Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierEnterprise,
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+		Scope:     &Scope{Accounts: []string{"123456789012"}},
+	}
+	entToken := signTestToken(entClaims, testPrivKey)
+	entStatus, err := Enforce(EnforcementOptions{
+		Environment:       "production",
+		LicenseKey:        entToken,
+		EnforcementMode:   "strict",
+		CallerAccountID:   "123456789012",
+		PublicKey:         testPubKey,
+		EvaluationTime:    now,
+		ExercisedFeatures: []string{FeatureParserCloudFrontParquet, FeatureScopeCrossAccount},
+	})
+	if err != nil || !entStatus.Valid {
+		t.Fatalf("expected Enterprise to permit Parquet and cross-account: %v", err)
+	}
+}

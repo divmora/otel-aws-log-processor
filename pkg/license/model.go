@@ -16,6 +16,56 @@ const (
 	TierEnterprise = "enterprise"
 )
 
+// Feature entitlement identifiers.
+const (
+	FeatureParserALB               = "parser.alb"
+	FeatureParserNLB               = "parser.nlb"
+	FeatureParserCloudFrontGzip    = "parser.cloudfront.gzip"
+	FeatureParserCloudFrontParquet = "parser.cloudfront.parquet"
+	FeatureParserWAF               = "parser.waf"
+	FeatureParserVPCFlow           = "parser.vpc_flow"
+	FeatureParserCloudTrail        = "parser.cloudtrail"
+	FeatureParserRoute53           = "parser.route53"
+	FeatureScopeCrossAccount       = "scope.cross_account"
+	FeatureScopeOrganization       = "scope.organization"
+	FeatureSenderOTLPHTTP          = "sender.otlp_http"
+	FeatureSenderOTLPGRPC          = "sender.otlp_grpc"
+	FeatureSecuritySecretsManager  = "security.secrets_manager"
+	FeatureSecurityMTLS            = "security.mtls"
+	FeatureEnrichmentGeoIP         = "enrichment.geoip"
+	FeatureEnrichmentUserAgent     = "enrichment.useragent"
+	FeatureMetricsEMF              = "metrics.emf"
+)
+
+// TierFeatures maps subscription plans to their default entitled feature flags.
+type TierFeatures = liblicense.TierFeatures
+
+// DefaultTierFeatures defines the canonical feature matrix mapping for otel-aws-log-processor plans.
+var DefaultTierFeatures = liblicense.TierFeatures{
+	TierCommunity: []string{
+		"runtime.non_prod",
+		FeatureParserALB,
+		FeatureParserNLB,
+		FeatureParserCloudFrontGzip,
+		FeatureParserWAF,
+		FeatureSenderOTLPHTTP,
+		FeatureSecuritySecretsManager,
+		FeatureMetricsEMF,
+	},
+	TierPro: []string{
+		FeatureParserALB,
+		FeatureParserNLB,
+		FeatureParserCloudFrontGzip,
+		FeatureParserWAF,
+		FeatureSenderOTLPHTTP,
+		FeatureSecuritySecretsManager,
+		FeatureMetricsEMF,
+	},
+	TierEnterprise: []string{
+		"*",
+	},
+}
+
 // Customer encapsulates customer identification metadata within a signed license token.
 type Customer = liblicense.Customer
 
@@ -69,6 +119,12 @@ var (
 
 	// ErrCRLMissing is returned when a Certificate Revocation List is required by policy but not found.
 	ErrCRLMissing = liblicense.ErrCRLMissing
+
+	// ErrFeatureNotEntitled is returned when a requested feature is not granted by the active license tier/plan.
+	ErrFeatureNotEntitled = liblicense.ErrFeatureNotEntitled
+
+	// ErrCommercialLicenseRequired is returned when usage exceeds BSL 1.1 grants and requires a commercial license.
+	ErrCommercialLicenseRequired = liblicense.ErrCommercialLicenseRequired
 )
 
 // LicenseRevokedError provides structured details when a license has been invalidated by a CRL.
@@ -137,4 +193,25 @@ type ValidationStatus struct {
 
 	// Claims contains the verified license claims (nil if unlicensed).
 	Claims *Claims `json:"claims,omitempty"`
+}
+
+// AssertFeature evaluates whether a feature is entitled under the validation status and environment.
+// Non-production environments and Apache-converted binaries are entitled to all features free of charge.
+// For production workloads with commercial claims, it checks against DefaultTierFeatures and explicit features.
+func AssertFeature(status *ValidationStatus, env string, feature string) error {
+	if IsNonProductionEnvironment(env) {
+		return nil
+	}
+	if status != nil && status.StatusReason == "apache_converted" {
+		return nil
+	}
+	if status == nil || status.Claims == nil {
+		return ErrCommercialLicenseRequired
+	}
+	return status.Claims.WithTierFeatures(DefaultTierFeatures).AssertFeature(feature)
+}
+
+// HasFeature returns true if the feature is entitled under the validation status and environment.
+func HasFeature(status *ValidationStatus, env string, feature string) bool {
+	return AssertFeature(status, env, feature) == nil
 }

@@ -109,6 +109,7 @@ type EnforcementOptions struct {
 	BatchRecordCount  int
 	QuotaTracker      *QuotaTracker
 	BucketName        string
+	ExercisedFeatures []string
 	PublicKey         ed25519.PublicKey
 	EvaluationTime    time.Time
 	AuthoritativeTime time.Time
@@ -330,6 +331,27 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 		}
 	}
 
+	// Verify Feature Entitlements for Exercised Features
+	for _, feat := range opts.ExercisedFeatures {
+		feat = strings.TrimSpace(feat)
+		if feat == "" {
+			continue
+		}
+		if featErr := AssertFeature(status, env, feat); featErr != nil {
+			unentitledMsg := fmt.Sprintf("COMMERCIAL LICENSE FEATURE NOT ENTITLED: Feature '%s' is not authorized by active license tier '%s'",
+				feat, GetClaimsPlan(status.Claims))
+			slog.Warn(unentitledMsg, "feature", feat, "tier", GetClaimsPlan(status.Claims), "contact", "licensing@divmora.com")
+			status.Valid = false
+			status.StatusReason = "feature_not_entitled"
+			status.Message = unentitledMsg
+
+			if mode == "strict" {
+				return status, fmt.Errorf("%s: %w", unentitledMsg, featErr)
+			}
+			return status, nil
+		}
+	}
+
 	// Handle Grace Period Notices
 	if status.InGracePeriod {
 		slog.Warn("COMMERCIAL LICENSE NOTICE: License has expired but is operating within its grace period",
@@ -391,7 +413,7 @@ func EmitCloudWatchEMF(status *ValidationStatus, env string, recordsProcessed in
 	}
 
 	violations := 0
-	if status != nil && (status.StatusReason == "unlicensed_production" || status.StatusReason == "revoked" || status.QuotaExceeded) {
+	if status != nil && (status.StatusReason == "unlicensed_production" || status.StatusReason == "revoked" || status.StatusReason == "feature_not_entitled" || status.QuotaExceeded) {
 		violations = 1
 	}
 
