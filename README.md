@@ -207,6 +207,7 @@ make docs-serve
 We welcome contributions from the community! Please review our community documents:
 
 - **[Contributing Guide](CONTRIBUTING.md)**: Guidelines for local setup, pull requests, and conventional commits.
+- **[Subscription Plans & Feature Matrix](docs/plans.md)**: Breakdown of Community (Free Non-Prod), Pro, and Enterprise tiers and feature entitlements.
 - **[Code of Conduct](CODE_OF_CONDUCT.md)**: Community standards and expectations.
 - **[Security Policy](SECURITY.md)**: Vulnerability disclosure guidelines and SLA.
 
@@ -218,7 +219,7 @@ This project is licensed under the **Business Source License 1.1 (BSL 1.1)** - s
 
 - **Non-Production Use**: 100% free of charge for local development, staging, QA, testing, CI/CD automated validation, and proof-of-concept evaluation. Simply set `ENVIRONMENT=development` or `staging`.
 - **Change Date Conversion**: Automatically converts to the permissive **Apache License, Version 2.0** exactly three (3) years after each release.
-- **Production Deployments**: Production use requires a valid commercial license (EULA) from DIVMORA Technologies.
+- **Production Deployments**: Production use requires a valid commercial license (EULA) from DIVMORA Technologies. See **[docs/plans.md](docs/plans.md)** for detailed subscription plans and the feature entitlement matrix.
 
 ### Supplying a Commercial License
 
