@@ -18,6 +18,7 @@ import (
 	"github.com/divmora/otel-aws-log-processor/pkg/sender"
 	"github.com/divmora/otel-aws-log-processor/pkg/utils"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -97,6 +98,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 	var allEntries []processor.LogAdapter
 	var lastBucket string
 	var authTime time.Time
+	featureSet := make(map[string]struct{})
 
 	logger.Info("Lambda triggered", "sqs_record_count", len(sqsEvent.Records))
 
@@ -130,6 +132,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 			// But ParseBodyAsS3 returns slice, so handle all
 			msgFailed := false
 			var recordEntries []processor.LogAdapter
+			recordFeatures := make(map[string]struct{})
 
 			for _, s3Record := range s3Records {
 				bucket := s3Record.S3.Bucket.Name
@@ -164,6 +167,20 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 
 				if len(entries) > 0 {
 					recordEntries = append(recordEntries, entries...)
+					switch proc.Name() {
+					case "ALB":
+						recordFeatures[license.FeatureParserALB] = struct{}{}
+					case "NLB":
+						recordFeatures[license.FeatureParserNLB] = struct{}{}
+					case "CloudFront":
+						if strings.HasSuffix(key, ".parquet") {
+							recordFeatures[license.FeatureParserCloudFrontParquet] = struct{}{}
+						} else {
+							recordFeatures[license.FeatureParserCloudFrontGzip] = struct{}{}
+						}
+					case "WAF":
+						recordFeatures[license.FeatureParserWAF] = struct{}{}
+					}
 				}
 			}
 
@@ -174,8 +191,13 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 				response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{
 					ItemIdentifier: record.MessageId,
 				})
-			} else if len(recordEntries) > 0 {
-				allEntries = append(allEntries, recordEntries...)
+			} else {
+				if len(recordEntries) > 0 {
+					allEntries = append(allEntries, recordEntries...)
+				}
+				for feat := range recordFeatures {
+					featureSet[feat] = struct{}{}
+				}
 			}
 		}(record)
 	}
@@ -199,12 +221,28 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 	callerAccount := license.ExtractCallerAccountID(ctx)
 	env := license.DetectEnvironment()
 
+	// Detect cross-account log ingestion feature
+	if callerAccount != "" {
+		for _, acc := range sourceAccounts {
+			if acc != "" && acc != callerAccount {
+				featureSet[license.FeatureScopeCrossAccount] = struct{}{}
+				break
+			}
+		}
+	}
+
+	var exercisedFeatures []string
+	for feat := range featureSet {
+		exercisedFeatures = append(exercisedFeatures, feat)
+	}
+
 	// Evaluate license compliance
 	licStatus, err := license.Enforce(license.EnforcementOptions{
 		Context:           ctx,
 		Environment:       env,
 		CallerAccountID:   callerAccount,
 		SourceAccountIDs:  sourceAccounts,
+		ExercisedFeatures: exercisedFeatures,
 		BatchRecordCount:  len(allEntries),
 		QuotaTracker:      quotaTracker,
 		BucketName:        lastBucket,
