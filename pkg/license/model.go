@@ -2,7 +2,11 @@ package license
 
 import (
 	"errors"
+	"fmt"
+	"path"
+	"regexp"
 	"strings"
+	"time"
 
 	liblicense "github.com/divmora/license-go/pkg/license"
 )
@@ -72,11 +76,341 @@ var DefaultTierFeatures = liblicense.TierFeatures{
 // Customer encapsulates customer identification metadata within a signed license token.
 type Customer = liblicense.Customer
 
-// Claims encapsulates the canonical cryptographic claims embedded in a signed license token.
-type Claims = liblicense.Claims
-
 // Scope defines operational boundaries restricting where and on what infrastructure the license is authorized.
-type Scope = liblicense.Scope
+type Scope struct {
+	// Environments restricts execution to specific deployment environments (optional).
+	Environments []string `json:"environments,omitempty"`
+
+	// Accounts restricts execution to specific 12-digit AWS Account IDs (legacy & boundary scope).
+	Accounts []string `json:"accounts,omitempty"`
+
+	// MaxAccounts specifies maximum allowed AWS spoke accounts (0 = unlimited).
+	MaxAccounts int `json:"max_accounts,omitempty"`
+
+	// MaxResources specifies maximum cumulative monitored resources (ALBs, NLBs, CloudFront, WAF) (0 = unlimited).
+	MaxResources int `json:"max_resources,omitempty"`
+
+	// AllowedResources specifies exact ARNs or ARN wildcard prefixes (e.g. "arn:aws:elasticloadbalancing:us-east-1:*:loadbalancer/app/*").
+	AllowedResources []string `json:"allowed_resources,omitempty"`
+
+	// Regions restricts execution to specific AWS regions (optional).
+	Regions []string `json:"regions,omitempty"`
+
+	// Clusters: authorized cluster IDs or ARNs (optional).
+	Clusters []string `json:"clusters,omitempty"`
+
+	// Namespaces: authorized project hierarchies, organizations, or groups (optional).
+	Namespaces []string `json:"namespaces,omitempty"`
+
+	// Hosts: authorized hostnames, FQDNs, or domain patterns (optional).
+	Hosts []string `json:"hosts,omitempty"`
+
+	// Custom: arbitrary product-specific scoping dimensions.
+	Custom map[string][]string `json:"custom,omitempty"`
+}
+
+// IsAccountAllowed reports whether the target AWS account ID is authorized by Scope.Accounts.
+func (s *Scope) IsAccountAllowed(account string) bool {
+	if s == nil || len(s.Accounts) == 0 {
+		return true
+	}
+	return matchesScopeSlice(s.Accounts, account)
+}
+
+// IsResourceAllowed reports whether the target resource ARN or identifier is authorized by Scope.AllowedResources.
+func (s *Scope) IsResourceAllowed(resourceARN string) bool {
+	if s == nil || len(s.AllowedResources) == 0 {
+		return true
+	}
+	resourceARN = strings.TrimSpace(resourceARN)
+	if resourceARN == "" {
+		return false
+	}
+	for _, pattern := range s.AllowedResources {
+		if MatchResourcePattern(pattern, resourceARN) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsEnvironmentAllowed reports whether the target deployment environment is authorized by Scope.Environments.
+func (s *Scope) IsEnvironmentAllowed(env string) bool {
+	if s == nil || len(s.Environments) == 0 {
+		return true
+	}
+	return matchesScopeSlice(s.Environments, env)
+}
+
+// IsRegionAllowed reports whether the target AWS region is authorized by Scope.Regions.
+func (s *Scope) IsRegionAllowed(region string) bool {
+	if s == nil || len(s.Regions) == 0 {
+		return true
+	}
+	return matchesScopeSlice(s.Regions, region)
+}
+
+// Claims encapsulates the canonical cryptographic claims embedded in a signed license token.
+type Claims struct {
+	// ID is the unique identifier for this license (e.g. UUIDv4).
+	ID string `json:"id"`
+
+	// KeyID optionally identifies the signing key used to issue this token (e.g., "divmora-2026-root" or key fingerprint).
+	KeyID string `json:"kid,omitempty"`
+
+	// Customer contains the customer organization identity and tenant details.
+	Customer Customer `json:"customer"`
+
+	// Product is the name of the software product (e.g., "gitlab-fleet-governor", "otel-aws-log-processor").
+	Product string `json:"product"`
+
+	// Plan designates the subscription or license tier (e.g., "community", "starter", "pro", "enterprise", "trial").
+	Plan string `json:"plan"`
+
+	// IssuedAt is the timestamp when the license was created.
+	IssuedAt time.Time `json:"issued_at"`
+
+	// NotBefore is the earliest timestamp when the license becomes valid.
+	NotBefore time.Time `json:"not_before,omitempty"`
+
+	// ExpiresAt is the timestamp when the license expires.
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
+
+	// GracePeriodDays specifies the allowed post-expiration grace period in days.
+	GracePeriodDays int `json:"grace_period_days,omitempty"`
+
+	// Features is the list of enabled feature flags/entitlements.
+	Features []string `json:"features,omitempty"`
+
+	// Limits is a map of quota thresholds.
+	Limits map[string]int64 `json:"limits,omitempty"`
+
+	// Scope defines operational infrastructure, environment, account, region, namespace, and host boundaries.
+	Scope *Scope `json:"scope,omitempty"`
+
+	// Environment restricts usage to a designated environment.
+	Environment string `json:"environment,omitempty"`
+
+	// Fingerprint binds the license to a specific cluster ID, hardware signature, or machine hash.
+	Fingerprint string `json:"fingerprint,omitempty"`
+
+	// MaxVersion defines the maximum authorized software version.
+	MaxVersion string `json:"max_version,omitempty"`
+
+	// AllowedVersions defines an explicit allowlist of version patterns.
+	AllowedVersions []string `json:"allowed_versions,omitempty"`
+
+	// MaintenanceExpiresAt specifies the maintenance/support update cutoff date.
+	MaintenanceExpiresAt time.Time `json:"maintenance_expires_at,omitempty"`
+
+	// CRLURL specifies an optional remote HTTPS distribution point where revocation lists are published.
+	CRLURL string `json:"crl_url,omitempty"`
+
+	// Metadata contains arbitrary key-value custom properties.
+	Metadata map[string]string `json:"metadata,omitempty"`
+
+	tierFeatures TierFeatures
+}
+
+// WithTierFeatures returns the Claims instance configured with a tier feature matrix.
+func (c *Claims) WithTierFeatures(tiers TierFeatures) *Claims {
+	if c != nil {
+		c.tierFeatures = tiers
+	}
+	return c
+}
+
+// TierFeatures returns the currently attached TierFeatures map.
+func (c *Claims) TierFeatures() TierFeatures {
+	if c == nil {
+		return nil
+	}
+	return c.tierFeatures
+}
+
+// SetTierFeatures updates the attached TierFeatures map.
+func (c *Claims) SetTierFeatures(tiers TierFeatures) {
+	if c != nil {
+		c.tierFeatures = tiers
+	}
+}
+
+// HasFeature returns true if the specified feature flag is enabled in the license.
+func (c *Claims) HasFeature(feature string) bool {
+	if c == nil {
+		return false
+	}
+	featureLower := strings.ToLower(strings.TrimSpace(feature))
+	if len(c.tierFeatures) > 0 {
+		return c.HasFeatureWithTiers(featureLower, c.tierFeatures)
+	}
+	return hasFeatureInList(featureLower, c.Features)
+}
+
+// HasFeatureWithTiers returns true if the feature is entitled according to tier mapping or explicit features.
+func (c *Claims) HasFeatureWithTiers(feature string, tierMap TierFeatures) bool {
+	if c == nil {
+		return false
+	}
+	featureLower := strings.ToLower(strings.TrimSpace(feature))
+
+	// 1. Check explicit features
+	if hasFeatureInList(featureLower, c.Features) {
+		return true
+	}
+
+	// 2. Check plan tier features
+	plan := strings.ToLower(strings.TrimSpace(c.Plan))
+	if plan == "" {
+		plan = TierCommunity
+	}
+	if tierFeats, exists := tierMap[plan]; exists {
+		if hasFeatureInList(featureLower, tierFeats) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// AssertFeature returns nil if the feature is enabled, or ErrFeatureNotEntitled if not.
+func (c *Claims) AssertFeature(feature string) error {
+	if c.HasFeature(feature) {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", ErrFeatureNotEntitled, feature)
+}
+
+// IsAccountAllowed reports whether the target cloud tenant or account ID is authorized.
+func (c *Claims) IsAccountAllowed(account string) bool {
+	if c == nil || c.Scope == nil || len(c.Scope.Accounts) == 0 {
+		return true
+	}
+	return c.Scope.IsAccountAllowed(account)
+}
+
+// IsResourceAllowed reports whether the target monitored resource is authorized.
+func (c *Claims) IsResourceAllowed(resourceARN string) bool {
+	if c == nil || c.Scope == nil || len(c.Scope.AllowedResources) == 0 {
+		return true
+	}
+	return c.Scope.IsResourceAllowed(resourceARN)
+}
+
+// DaysRemaining returns days until expiration (positive) or 0 if expired.
+func (c *Claims) DaysRemaining() int {
+	return c.DaysRemainingAt(time.Now().UTC())
+}
+
+// DaysRemainingAt returns the number of full days remaining before expiration at reference time t.
+func (c *Claims) DaysRemainingAt(t time.Time) int {
+	if c == nil || c.IsPerpetual() {
+		return -1
+	}
+	diff := c.ExpiresAt.Sub(t)
+	if diff <= 0 {
+		return 0
+	}
+	return int(diff.Hours() / 24)
+}
+
+// GraceDaysRemaining returns remaining grace period days from now.
+func (c *Claims) GraceDaysRemaining() int {
+	return c.GraceDaysRemainingAt(time.Now().UTC())
+}
+
+// GraceDaysRemainingAt returns remaining grace period days at reference time t.
+func (c *Claims) GraceDaysRemainingAt(t time.Time, skew ...time.Duration) int {
+	if c == nil || c.IsPerpetual() || !c.IsInGracePeriodAt(t, skew...) {
+		return 0
+	}
+	effectiveExp := c.EffectiveExpiration()
+	diff := effectiveExp.Sub(t)
+	if diff <= 0 {
+		return 0
+	}
+	return int(diff.Hours() / 24)
+}
+
+// IsPerpetual reports whether the license never expires.
+func (c *Claims) IsPerpetual() bool {
+	return c != nil && c.ExpiresAt.IsZero()
+}
+
+// IsExpired reports whether the license expiration has passed.
+func (c *Claims) IsExpired() bool {
+	return c.IsExpiredAt(time.Now().UTC())
+}
+
+// IsExpiredAt reports whether the license is expired at reference time t.
+func (c *Claims) IsExpiredAt(t time.Time, skew ...time.Duration) bool {
+	if c == nil || c.IsPerpetual() {
+		return false
+	}
+	return t.After(c.ExpiresAt)
+}
+
+// IsInGracePeriod reports whether the license is within its post-expiration grace period.
+func (c *Claims) IsInGracePeriod() bool {
+	return c.IsInGracePeriodAt(time.Now().UTC())
+}
+
+// IsInGracePeriodAt reports whether the license is within its grace period at reference time t.
+func (c *Claims) IsInGracePeriodAt(t time.Time, skew ...time.Duration) bool {
+	if c == nil || c.IsPerpetual() {
+		return false
+	}
+	if !c.IsExpiredAt(t, skew...) {
+		return false
+	}
+	return t.Before(c.EffectiveExpiration())
+}
+
+// EffectiveExpiration returns the hard cutoff timestamp including grace period.
+func (c *Claims) EffectiveExpiration() time.Time {
+	if c == nil || c.IsPerpetual() {
+		return time.Time{}
+	}
+	graceDays := c.GracePeriodDays
+	if graceDays <= 0 {
+		graceDays = DefaultGracePeriodDays
+	}
+	return c.ExpiresAt.AddDate(0, 0, graceDays)
+}
+
+// ValidateClaimsSchema validates the Claims struct against the DIV1 claims schema constraints.
+func (c *Claims) ValidateClaimsSchema() error {
+	if c.ID == "" {
+		return fmt.Errorf("%w: claims.id is required", liblicense.ErrInvalidLicenseFormat)
+	}
+	if c.Customer.Name == "" {
+		return fmt.Errorf("%w: claims.customer.name is required", liblicense.ErrInvalidLicenseFormat)
+	}
+	if c.Product == "" {
+		return fmt.Errorf("%w: claims.product is required", liblicense.ErrInvalidLicenseFormat)
+	}
+	if c.Plan == "" {
+		return fmt.Errorf("%w: claims.plan is required", liblicense.ErrInvalidLicenseFormat)
+	}
+	if c.IssuedAt.IsZero() {
+		return fmt.Errorf("%w: claims.issued_at is required", liblicense.ErrInvalidLicenseFormat)
+	}
+	return nil
+}
+
+// DefaultCommunityClaims returns standard community tier claims for the product.
+func DefaultCommunityClaims(product string) *Claims {
+	return &Claims{
+		ID: "community-default",
+		Customer: Customer{
+			Name: "Community User",
+		},
+		Product:  product,
+		Plan:     TierCommunity,
+		IssuedAt: time.Now().UTC(),
+		Scope:    &Scope{},
+	}
+}
 
 // VerificationResult encapsulates verified license claims alongside explicit grace period dynamics.
 type VerificationResult = liblicense.VerificationResult
@@ -128,6 +462,12 @@ var (
 
 	// ErrCommercialLicenseRequired is returned when usage exceeds BSL 1.1 grants and requires a commercial license.
 	ErrCommercialLicenseRequired = liblicense.ErrCommercialLicenseRequired
+
+	// ErrResourceQuotaExceeded is returned when the count of active monitored resources exceeds MaxResources.
+	ErrResourceQuotaExceeded = errors.New("commercial license monitored resource quota exceeded")
+
+	// ErrResourceNotAllowed is returned when a resource ARN is not authorized by AllowedResources.
+	ErrResourceNotAllowed = errors.New("resource ARN not authorized by commercial license")
 )
 
 // LicenseRevokedError provides structured details when a license has been invalidated by a CRL.
@@ -172,6 +512,42 @@ func GetAllowedAccounts(c *Claims) []string {
 		return nil
 	}
 	return c.Scope.Accounts
+}
+
+// GetMaxResources returns the maximum authorized monitored resources from Claims.Scope.MaxResources.
+// Returns 0 if uncapped or unlimited.
+func GetMaxResources(c *Claims) int {
+	if c == nil || c.Scope == nil || c.Scope.MaxResources <= 0 {
+		return 0
+	}
+	return c.Scope.MaxResources
+}
+
+// GetAllowedResources returns the list of authorized resource patterns from Claims.Scope.AllowedResources.
+func GetAllowedResources(c *Claims) []string {
+	if c == nil || c.Scope == nil {
+		return nil
+	}
+	return c.Scope.AllowedResources
+}
+
+// GetMaxAccounts returns the maximum allowed AWS accounts from Claims.Scope.MaxAccounts.
+// Returns 0 if uncapped or unlimited.
+func GetMaxAccounts(c *Claims) int {
+	if c == nil || c.Scope == nil || c.Scope.MaxAccounts <= 0 {
+		return 0
+	}
+	return c.Scope.MaxAccounts
+}
+
+// IsResourceAllowed checks whether a monitored resource ARN or identifier is authorized
+// by Claims.Scope.AllowedResources.
+// If AllowedResources is nil or empty, all resources are authorized (unrestricted).
+func IsResourceAllowed(c *Claims, resourceARN string) bool {
+	if c == nil || c.Scope == nil || len(c.Scope.AllowedResources) == 0 {
+		return true
+	}
+	return c.Scope.IsResourceAllowed(resourceARN)
 }
 
 // ValidationStatus represents the outcome of evaluating license compliance for an execution.
@@ -221,8 +597,9 @@ func HasFeature(status *ValidationStatus, env string, feature string) bool {
 
 // IsDeterministicLicenseError reports whether an error represents a permanent license compliance failure
 // that cannot be resolved by an immediate retry (e.g. missing license, expired license, revoked license,
-// account mismatch, or unentitled feature). In serverless execution (AWS Lambda with SQS), such errors
-// must not trigger unhandled SQS retries to prevent infinite retry loops and billing inflation.
+// account mismatch, unentitled feature, resource quota breach, or unauthorized resource).
+// In serverless execution (AWS Lambda with SQS), such errors must not trigger unhandled SQS retries
+// to prevent infinite retry loops and billing inflation.
 func IsDeterministicLicenseError(err error) bool {
 	if err == nil {
 		return false
@@ -230,6 +607,8 @@ func IsDeterministicLicenseError(err error) bool {
 	if errors.Is(err, ErrCommercialLicenseRequired) ||
 		errors.Is(err, ErrFeatureNotEntitled) ||
 		errors.Is(err, ErrLicenseRevoked) ||
+		errors.Is(err, ErrResourceQuotaExceeded) ||
+		errors.Is(err, ErrResourceNotAllowed) ||
 		errors.Is(err, liblicense.ErrExpired) ||
 		errors.Is(err, liblicense.ErrNotYetValid) ||
 		errors.Is(err, liblicense.ErrProductMismatch) ||
@@ -245,5 +624,148 @@ func IsDeterministicLicenseError(err error) bool {
 	return strings.Contains(msg, "COMMERCIAL LICENSE") ||
 		strings.Contains(msg, "license verification failed") ||
 		strings.Contains(msg, "ACCOUNT MISMATCH") ||
+		strings.Contains(msg, "RESOURCE QUOTA EXCEEDED") ||
+		strings.Contains(msg, "RESOURCE NOT ALLOWED") ||
 		strings.Contains(msg, "not authorized")
+}
+
+func matchesScopeSlice(allowed []string, target string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	targetTrimmed := strings.TrimSpace(target)
+	if targetTrimmed == "" {
+		return false
+	}
+	targetLower := strings.ToLower(targetTrimmed)
+
+	for _, entry := range allowed {
+		entryTrimmed := strings.TrimSpace(entry)
+		entryLower := strings.ToLower(entryTrimmed)
+		if entryLower == "*" || entryLower == "all" {
+			return true
+		}
+		if entryLower == targetLower {
+			return true
+		}
+		if strings.ContainsAny(entryLower, "*?[") {
+			if matched, err := path.Match(entryLower, targetLower); err == nil && matched {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// MatchResourcePattern matches a resource ARN or identifier against a pattern.
+// Supported patterns:
+//   - "*" or "all": matches any resource
+//   - Exact string match (case-insensitive)
+//   - Wildcards (* and ?) anywhere in the pattern
+//   - Pattern without "arn:aws:" prefix matching against the resource suffix of an ARN
+func MatchResourcePattern(pattern string, resourceARN string) bool {
+	pattern = strings.TrimSpace(pattern)
+	resourceARN = strings.TrimSpace(resourceARN)
+
+	if pattern == "" || resourceARN == "" {
+		return false
+	}
+
+	if pattern == "*" || strings.EqualFold(pattern, "all") {
+		return true
+	}
+
+	if strings.EqualFold(pattern, resourceARN) {
+		return true
+	}
+
+	// Direct wildcard match
+	if matchWildcard(pattern, resourceARN) {
+		return true
+	}
+
+	// If resourceARN is a full ARN, check if pattern matches against the resource suffix
+	if strings.HasPrefix(strings.ToLower(resourceARN), "arn:aws:") {
+		// Extract suffix after service-specific resource prefixes:
+		// e.g. ":loadbalancer/" -> "app/my-alb/50dc6c495c0c9188"
+		// e.g. ":distribution/" -> "EDFDVBD632BHFR5"
+		// e.g. "/webacl/" -> "my-webacl/uuid" or "my-webacl"
+		for _, sep := range []string{":loadbalancer/", ":distribution/", "/webacl/", ":targetgroup/"} {
+			if idx := strings.Index(strings.ToLower(resourceARN), sep); idx != -1 {
+				suffix := resourceARN[idx+len(sep):]
+				if strings.EqualFold(pattern, suffix) || matchWildcard(pattern, suffix) {
+					return true
+				}
+				// Also if suffix has multiple parts like "my-webacl/uuid", check "my-webacl"
+				if parts := strings.Split(suffix, "/"); len(parts) > 1 {
+					if strings.EqualFold(pattern, parts[0]) || matchWildcard(pattern, parts[0]) {
+						return true
+					}
+				}
+			}
+		}
+
+		// Or 6th colon component: arn:partition:service:region:account:resource-id
+		parts := strings.SplitN(resourceARN, ":", 6)
+		if len(parts) >= 6 {
+			resPart := parts[5]
+			if strings.EqualFold(pattern, resPart) || matchWildcard(pattern, resPart) {
+				return true
+			}
+		}
+	}
+
+	// If pattern is a full ARN but resourceARN is a short identifier:
+	if strings.HasPrefix(strings.ToLower(pattern), "arn:aws:") && !strings.HasPrefix(strings.ToLower(resourceARN), "arn:aws:") {
+		for _, sep := range []string{":loadbalancer/", ":distribution/", "/webacl/", ":targetgroup/"} {
+			if idx := strings.Index(strings.ToLower(pattern), sep); idx != -1 {
+				patternSuffix := pattern[idx+len(sep):]
+				if strings.EqualFold(patternSuffix, resourceARN) || matchWildcard(patternSuffix, resourceARN) {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+func matchWildcard(pattern, text string) bool {
+	var b strings.Builder
+	b.WriteString("(?i)^")
+	for i := 0; i < len(pattern); i++ {
+		c := pattern[i]
+		switch c {
+		case '*':
+			b.WriteString(".*")
+		case '?':
+			b.WriteString(".")
+		case '.', '+', '(', ')', '[', ']', '{', '}', '^', '$', '\\', '|':
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	b.WriteString("$")
+	re, err := regexp.Compile(b.String())
+	if err != nil {
+		return false
+	}
+	return re.MatchString(text)
+}
+
+func hasFeatureInList(target string, list []string) bool {
+	for _, f := range list {
+		fLower := strings.ToLower(strings.TrimSpace(f))
+		if fLower == "*" || fLower == "all" || fLower == target {
+			return true
+		}
+		if strings.ContainsAny(fLower, "*?[") {
+			if matched, err := path.Match(fLower, target); err == nil && matched {
+				return true
+			}
+		}
+	}
+	return false
 }

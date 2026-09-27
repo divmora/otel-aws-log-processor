@@ -205,4 +205,74 @@ func TestHandlerLicensingModes(t *testing.T) {
 			t.Errorf("got status reason %s, want feature_not_entitled", statusUnentitled.StatusReason)
 		}
 	})
+
+	// 6. Test Production Resource Quota Verification
+	t.Run("ProductionResourceQuotaVerification", func(t *testing.T) {
+		license.SetVerificationPublicKey(testHandlerPubKey)
+		defer license.ResetVerificationPublicKey()
+
+		quotaClaims := &license.Claims{
+			ID: "lic_handler_quota_test",
+			Customer: license.Customer{
+				Name: "Resource Pack Customer",
+			},
+			Product: "otel-aws-log-processor",
+			Plan:    license.TierPro,
+			Scope: &license.Scope{
+				Accounts:     []string{"123456789012"},
+				MaxResources: 2,
+				AllowedResources: []string{
+					"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/*",
+				},
+			},
+			IssuedAt:  time.Now().UTC(),
+			ExpiresAt: time.Now().UTC().AddDate(1, 0, 0),
+		}
+		token := signTestHandlerToken(quotaClaims, testHandlerPrivKey)
+
+		// 1. Within quota (2 resources)
+		tracker := license.NewResourceTracker()
+		optsWithin := license.EnforcementOptions{
+			Environment:     "production",
+			EnforcementMode: "strict",
+			LicenseKey:      token,
+			CallerAccountID: "123456789012",
+			SourceResourceARNs: []string{
+				"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/alb-1/hash",
+				"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/alb-2/hash",
+			},
+			ResourceTracker: tracker,
+			PublicKey:       testHandlerPubKey,
+		}
+		statusWithin, err := license.Enforce(optsWithin)
+		if err != nil || !statusWithin.Valid {
+			t.Fatalf("expected within quota to succeed: %v", err)
+		}
+		if tracker.Count() != 2 {
+			t.Errorf("expected 2 active resources, got %d", tracker.Count())
+		}
+
+		// 2. Quota breach (3rd resource)
+		optsBreach := license.EnforcementOptions{
+			Environment:     "production",
+			EnforcementMode: "strict",
+			LicenseKey:      token,
+			CallerAccountID: "123456789012",
+			SourceResourceARNs: []string{
+				"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/alb-3/hash",
+			},
+			ResourceTracker: tracker,
+			PublicKey:       testHandlerPubKey,
+		}
+		statusBreach, errBreach := license.Enforce(optsBreach)
+		if errBreach == nil {
+			t.Fatal("expected quota breach error")
+		}
+		if !license.IsDeterministicLicenseError(errBreach) {
+			t.Errorf("expected deterministic error on quota breach, got: %v", errBreach)
+		}
+		if statusBreach.Valid || statusBreach.StatusReason != "resource_quota_exceeded" {
+			t.Errorf("expected status reason resource_quota_exceeded, got: %s", statusBreach.StatusReason)
+		}
+	})
 }

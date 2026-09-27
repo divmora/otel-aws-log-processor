@@ -23,12 +23,13 @@ import (
 )
 
 var (
-	s3Client      *s3.Client
-	logger        *slog.Logger
-	maxConcurrent int
-	registry      *processor.Registry
-	otlpClient    *sender.OTLPClient
-	quotaTracker  *license.QuotaTracker
+	s3Client        *s3.Client
+	logger          *slog.Logger
+	maxConcurrent   int
+	registry        *processor.Registry
+	otlpClient      *sender.OTLPClient
+	quotaTracker    *license.QuotaTracker
+	resourceTracker *license.ResourceTracker
 )
 
 func init() {
@@ -80,6 +81,9 @@ func init() {
 	// Initialize Non-Production Quota Tracker
 	quotaTracker = license.NewQuotaTracker()
 
+	// Initialize Container Resource Tracker
+	resourceTracker = license.NewResourceTracker()
+
 	// Initial license compliance check
 	env := license.DetectEnvironment()
 	initStatus, _ := license.Enforce(license.EnforcementOptions{
@@ -129,7 +133,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 			"caller_account", callerAccount,
 			"action", failureAction,
 		)
-		license.EmitCloudWatchEMF(preflightStatus, env, 0)
+		license.EmitCloudWatchEMF(preflightStatus, env, 0, resourceTracker.Count())
 
 		if failureAction == "dlq" {
 			for _, rec := range sqsEvent.Records {
@@ -145,6 +149,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 	}
 
 	var allEntries []processor.LogAdapter
+	var processedKeys []string
 	var lastBucket string
 	featureSet := make(map[string]struct{})
 
@@ -172,6 +177,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 			// But ParseBodyAsS3 returns slice, so handle all
 			msgFailed := false
 			var recordEntries []processor.LogAdapter
+			var recordKeys []string
 			recordFeatures := make(map[string]struct{})
 
 			for _, s3Record := range s3Records {
@@ -205,6 +211,8 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 					break // Stop processing this SQS message, mark as failed
 				}
 
+				recordKeys = append(recordKeys, key)
+
 				if len(entries) > 0 {
 					recordEntries = append(recordEntries, entries...)
 					switch proc.Name() {
@@ -234,6 +242,9 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 			} else {
 				if len(recordEntries) > 0 {
 					allEntries = append(allEntries, recordEntries...)
+				}
+				if len(recordKeys) > 0 {
+					processedKeys = append(processedKeys, recordKeys...)
 				}
 				for feat := range recordFeatures {
 					featureSet[feat] = struct{}{}
@@ -273,17 +284,40 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 		exercisedFeatures = append(exercisedFeatures, feat)
 	}
 
+	// Extract source resource ARNs from parsed log records and S3 keys
+	sourceResourceMap := make(map[string]struct{})
+	for _, entry := range allEntries {
+		if arn, shortID := license.ExtractResourceFromAttributes(entry.GetResourceAttributes()); arn != "" {
+			sourceResourceMap[arn] = struct{}{}
+		} else if shortID != "" {
+			sourceResourceMap[shortID] = struct{}{}
+		}
+	}
+	for _, k := range processedKeys {
+		if arn, shortID := license.ExtractResourceFromS3Key(k); arn != "" {
+			sourceResourceMap[arn] = struct{}{}
+		} else if shortID != "" {
+			sourceResourceMap[shortID] = struct{}{}
+		}
+	}
+	var sourceResources []string
+	for res := range sourceResourceMap {
+		sourceResources = append(sourceResources, res)
+	}
+
 	// Evaluate license compliance
 	licStatus, err := license.Enforce(license.EnforcementOptions{
-		Context:           ctx,
-		Environment:       env,
-		CallerAccountID:   callerAccount,
-		SourceAccountIDs:  sourceAccounts,
-		ExercisedFeatures: exercisedFeatures,
-		BatchRecordCount:  len(allEntries),
-		QuotaTracker:      quotaTracker,
-		BucketName:        lastBucket,
-		AuthoritativeTime: authTime,
+		Context:            ctx,
+		Environment:        env,
+		CallerAccountID:    callerAccount,
+		SourceAccountIDs:   sourceAccounts,
+		SourceResourceARNs: sourceResources,
+		ExercisedFeatures:  exercisedFeatures,
+		BatchRecordCount:   len(allEntries),
+		QuotaTracker:       quotaTracker,
+		ResourceTracker:    resourceTracker,
+		BucketName:         lastBucket,
+		AuthoritativeTime:  authTime,
 	})
 	if err != nil {
 		if license.IsDeterministicLicenseError(err) {
@@ -293,7 +327,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 				"caller_account", callerAccount,
 				"action", failureAction,
 			)
-			license.EmitCloudWatchEMF(licStatus, env, len(allEntries))
+			license.EmitCloudWatchEMF(licStatus, env, len(allEntries), resourceTracker.Count())
 
 			if failureAction == "dlq" {
 				for _, rec := range sqsEvent.Records {
@@ -323,7 +357,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 	}
 
 	// Emit CloudWatch EMF Metric (asynchronous stdout)
-	license.EmitCloudWatchEMF(licStatus, env, len(allEntries))
+	license.EmitCloudWatchEMF(licStatus, env, len(allEntries), resourceTracker.Count())
 
 	logger.Info("Lambda execution completed", "failures", len(response.BatchItemFailures))
 	return response, nil

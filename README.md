@@ -232,6 +232,16 @@ export DIVMORA_LICENSE_KEY="DIV1.<payload>.<signature>"
 
 Alternatively, mount a license file and point to its location using `DIVMORA_LICENSE_FILE=/path/to/license.key`.
 
+### Monitored Resource Packs & Multi-Account Scoping
+
+Commercial licenses decouple charging units from raw AWS account counts, using **Monitored Resource Packs** (ALBs, NLBs, CloudFront distributions, AWS WAF WebACLs). This eliminates the cost penalty of modern multi-account landing zones (e.g., 25 spoke accounts with 1 ALB each):
+
+- **`claims.Scope.MaxResources`**: Maximum unique monitored resources allowed per container lifecycle (e.g., 25 on Pro, 50+ on Enterprise). Legacy tokens (`max_resources == 0`) remain uncapped for full backward compatibility.
+- **`claims.Scope.AllowedResources`**: Optional list of allowed ARNs, wildcard glob patterns (`arn:aws:elasticloadbalancing:*:*:loadbalancer/app/*`), or short resource IDs (e.g., CloudFront distribution IDs).
+- **`claims.Scope.MaxAccounts`**: Maximum number of spoke AWS Accounts permitted.
+- **In-Memory Tracking**: Thread-safe `ResourceTracker` deduplicates active resources across concurrent SQS worker goroutines.
+- **CloudWatch EMF Metrics**: Emits `ActiveMonitoredResources` gauges alongside `RecordsProcessed` and `LicenseViolations` under the `Divmora/LogProcessor` metric namespace for real-time FinOps monitoring.
+
 ### Production Enforcement Modes
 
 | Mode | Behavior |

@@ -25,25 +25,28 @@ flowchart LR
         C1["Zero License Token Required"]
         C2["BSL 1.1 Non-Production Grant"]
         C3["Dev, Test, Staging, Sandboxes"]
-        C4["Single-Invocation Density Fair-Use"]
+        C4["Up to 5 Monitored Resources"]
+        C5["1 AWS Non-Prod Account"]
     end
 
-    subgraph Pro["Pro Plan (Commercial Production)"]
-        P1["Single AWS Production Account"]
-        P2["ALB, NLB, CloudFront (Gzip), WAF"]
-        P3["OTLP / HTTP JSON Streaming"]
-        P4["Secrets Manager Integration"]
-        P5["CloudWatch EMF Metrics"]
+    subgraph Pro["Pro Plan (Monitored Resource Packs)"]
+        P1["Up to 25 Monitored Resources"]
+        P2["Up to 3 AWS Accounts (Spokes)"]
+        P3["$50 / Resource / Month"]
+        P4["ALB, NLB, CloudFront (Gzip), WAF"]
+        P5["OTLP / HTTP JSON Streaming"]
+        P6["CloudWatch EMF Metrics"]
     end
 
-    subgraph Enterprise["Enterprise Plan (Scale & Security)"]
-        E1["CloudFront & VPC Flow Parquet"]
-        E2["Cross-Account & AWS Org Aggregation"]
-        E3["OTLP / gRPC & Protobuf Exporter"]
-        E4["Zero-Trust mTLS Authentication"]
-        E5["MaxMind GeoIP & ASN Enrichment"]
-        E6["Offline CRL & Air-Gapped Sync"]
-        E7["Wildcard Entitlement (*)"]
+    subgraph Enterprise["Enterprise Plan (Scale & Fleet)"]
+        E1["50+ Monitored Resources"]
+        E2["10+ Accounts / AWS Org Aggregation"]
+        E3["$18,000 / Year Platform Base"]
+        E4["CloudFront & VPC Flow Parquet"]
+        E5["OTLP / gRPC & Protobuf Exporter"]
+        E6["Zero-Trust mTLS Authentication"]
+        E7["MaxMind GeoIP & ASN Enrichment"]
+        E8["Offline CRL & Air-Gapped Sync"]
     end
 
     Community --> Pro --> Enterprise
@@ -51,11 +54,11 @@ flowchart LR
 
 ### Plan Summary
 
-| Plan | Target Audience | Scaling & Infrastructure Scope | Key Focus |
-|---|---|---|---|
-| **Community Tier (Free BSL)** | Developers, DevOps, QA, CI/CD | Non-Production Environments (`dev`, `staging`, `test`) | Frictionless evaluation, staging validation, and local development |
-| **Pro Plan** | Growth Startups, Engineering Teams | Single Production AWS Account | Production ALB, NLB, CloudFront Gzip, and WAF log streaming to OTLP |
-| **Enterprise Plan** | Scale-Ups, Enterprises, SecOps | Multi-Account Fleets & AWS Organizations | High-throughput Parquet, cross-account aggregation, gRPC, mTLS, GeoIP |
+| Plan | Target Audience | Monitored Resource Capacity | AWS Account Scope | Indicative Commercial Pricing | Key Architectural Focus |
+|---|---|:---:|:---:|:---:|---|
+| **Community Tier (Free BSL)** | Developers, DevOps, QA, CI/CD | Up to 5 Resources | 1 Account (Non-Prod) | **$0** (Free Forever) | Frictionless evaluation, staging validation, and local development |
+| **Pro Plan (Resource Pack)** | Growth Startups, Engineering Teams | Up to 25 Resources | Up to 3 Accounts | **$50 / res / mo** ($1,250/mo pack) | Production ALB, NLB, CloudFront Gzip, and WAF log streaming to OTLP |
+| **Enterprise Plan** | Scale-Ups, Enterprises, SecOps | 50+ Resources (Flexible Packs) | 10+ Accounts / AWS Org | Starts at **$18,000 / yr** base | High-throughput Parquet, cross-account aggregation, gRPC, mTLS, GeoIP |
 
 ---
 
@@ -98,12 +101,13 @@ The following table details feature availability and runtime verification mechan
 - **Fair-Use Limits**: Non-production instances enforce batch density and container cumulative volume fair-use ceilings to prevent unmonetized production usage.
 
 ### 4.2 Pro Plan Capabilities
-- **Single Production Account Scope**: Authorized for commercial production execution within the designated AWS Account ID specified in `claims.Scope.Accounts`.
+- **Monitored Resource Pack Scope**: Authorized for commercial production execution for up to 25 monitored resources across up to 3 AWS Accounts (spokes).
 - **Standard Ingestion Engines**: Production-grade parsing and OTLP transformation of ALB, NLB, CloudFront (Gzip), and AWS WAF logs.
 - **Secrets Manager Integration**: Securely resolves collector credentials via AWS Secrets Manager.
-- **CloudWatch EMF Ingestion**: Zero-overhead asynchronous metric logging to CloudWatch Logs with dimensioned license status tracking.
+- **CloudWatch EMF Compliance & Active Resource Metrics**: Zero-overhead asynchronous metric logging to CloudWatch Logs with dimensioned license status tracking and `ActiveMonitoredResources` gauges.
 
 ### 4.3 Enterprise Plan Capabilities
+- **Scale Resource Packs & Multi-Account Fleet**: 50+ monitored resources across 10+ accounts or entire AWS Organizations without per-account pricing friction.
 - **High-Throughput Parquet Processing (`parser.cloudfront.parquet`, `parser.vpc_flow`)**: Ingests column-oriented Parquet log files directly from S3 using streaming record readers, drastically reducing data transfer and memory overhead.
 - **Cross-Account & AWS Organization Ingestion (`scope.cross_account`, `scope.organization`)**: Enables centralized log processor Lambdas to ingest SQS and S3 notifications across dozens or hundreds of AWS accounts within an AWS Organization.
 - **Zero-Trust Exporter Security (`security.mtls`, `sender.otlp_grpc`)**: Binary Protobuf serialization via HTTP/2 gRPC streaming and mutual TLS client certificate verification for air-gapped or zero-trust OTLP collectors.
@@ -112,7 +116,98 @@ The following table details feature availability and runtime verification mechan
 
 ---
 
-## 5. Commercial License Activation & Configuration
+## 5. Monitored Resource Packs: Architectural Decoupling & Schema
+
+### 5.1 The Multi-Spoke Micro-Account Pricing Problem
+Modern cloud-native AWS architectures rely on multi-account landing zone designs (AWS Control Tower, Landing Zone Accelerator, AWS Organizations). In these topologies, engineering teams deploy isolated micro-workloads into dedicated spoke accounts—for example, 25 spoke accounts each running a single Application Load Balancer.
+
+Traditional commercial licensing that charges by raw AWS Account count creates an artificial **25x cost penalty** for these architectures, even though the infrastructure footprint and log throughput are identical to a single monolith account hosting 25 ALBs.
+
+To align with modern cloud infrastructure best practices, `otel-aws-log-processor` decouples commercial charging from raw AWS account counts, introducing **Monitored Resource Packs**.
+
+### 5.2 Definition of a Monitored Resource
+A Monitored Resource represents a unique active ingress infrastructure endpoint whose access logs are ingested and processed into OpenTelemetry records:
+
+| Resource Type | Resource Identifier Format | Extracted From |
+|---|---|---|
+| **Application Load Balancer (ALB)** | `arn:aws:elasticloadbalancing:<region>:<account>:loadbalancer/app/<name>/<id>` | Parsed OTel attribute (`alb.arn`) or S3 key (`.../elasticloadbalancing/.../app/...`) |
+| **Network Load Balancer (NLB)** | `arn:aws:elasticloadbalancing:<region>:<account>:loadbalancer/net/<name>/<id>` | Parsed OTel attribute (`nlb.arn`) or S3 key (`.../elasticloadbalancing/.../net/...`) |
+| **Amazon CloudFront Distribution** | Distribution ID (e.g., `EDFDVBD632BHFR5`) or CloudFront ARN | Parsed OTel attribute (`cloudfront.distribution_id`) or S3 key |
+| **AWS WAF WebACL** | `arn:aws:wafv2:<region>:<account>:regional/webacl/<name>/<id>` or CloudFront global WebACL | Parsed OTel attribute (`waf.web_acl_id`) or S3 key (`.../aws-waf-logs-...`) |
+
+### 5.3 License Claims Schema (`claims.Scope`)
+
+Commercial Ed25519 tokens incorporate resource quota definitions directly into the signed payload `claims.Scope`:
+
+```json
+{
+  "id": "lic_9901abcdef",
+  "tier": "pro",
+  "product": "otel-aws-log-processor",
+  "customer": "Example Corp",
+  "features": ["parser.alb", "parser.nlb", "parser.cloudfront.gzip", "parser.waf", "metrics.emf"],
+  "scope": {
+    "accounts": ["123456789012", "234567890123", "345678901234"],
+    "max_accounts": 3,
+    "max_resources": 25,
+    "allowed_resources": [
+      "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/*",
+      "arn:aws:elasticloadbalancing:us-east-1:234567890123:loadbalancer/app/api-*",
+      "EDFDVBD632BHFR5"
+    ]
+  },
+  "exp": 1893456000
+}
+```
+
+#### Field Specifications:
+- `claims.Scope.MaxResources` (`int`): Maximum count of unique active monitored resources permitted within the running Lambda container lifecycle.
+  - **Backwards Compatibility**: When `max_resources == 0` or is omitted (such as in legacy commercial licenses), the resource count is **uncapped**, ensuring zero disruption to existing production contracts.
+- `claims.Scope.AllowedResources` (`[]string`): Optional list of authorized resource identifiers, supporting:
+  - Exact ARN or short ID matches (`arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/api/50dc6c495c0c9188` or `EDFDVBD632BHFR5`).
+  - Hierarchical wildcard glob patterns (`*` and `?`), crossing `/` and `:` delimiters (e.g. `arn:aws:elasticloadbalancing:*:*:loadbalancer/app/prod-*`).
+  - Suffix matching against short load balancer IDs (e.g. matching `app/prod-api/123` against full ARN).
+- `claims.Scope.MaxAccounts` (`int`): Maximum count of AWS accounts authorized under the license pack.
+
+### 5.4 In-Container Runtime Tracking & Enforcement
+
+The processor runtime utilizes a thread-safe `ResourceTracker` (`sync.RWMutex`) to identify and deduplicate active resources across concurrent SQS worker goroutines:
+
+1. **Pre-flight Fast Fail**: Standard account and feature validations occur before S3 downloads.
+2. **Dynamic Ingestion Extraction**: As log records are parsed, resource identifiers are extracted from both S3 keys and parsed record attributes.
+3. **Tracking & Deduplication**: Active resources are added to the container's `ResourceTracker`.
+4. **Enforcement Modes**:
+   - **`DIVMORA_LICENSE_MODE=warn` (Default)**: If active monitored resources exceed `MaxResources`, or a resource is not listed in `AllowedResources`, the invocation logs a structured warning and stamps `divmora.license.status=resource_quota_exceeded` or `resource_not_allowed` on exported telemetry without interrupting the data stream.
+   - **`DIVMORA_LICENSE_MODE=strict`**: Quota breaches return deterministic errors (`ErrResourceQuotaExceeded` or `ErrResourceNotAllowed`). Combined with `DIVMORA_LICENSE_FAILURE_ACTION=discard`, the Lambda acknowledges the message to cleanly halt cost-inflating SQS redrive loops while recording violation telemetry.
+5. **CloudWatch EMF Metric Schema**:
+   The runtime publishes dimensioned metrics under the `Divmora/LogProcessor` namespace:
+   ```json
+   {
+     "_aws": {
+       "Timestamp": 1790326624825,
+       "CloudWatchMetrics": [
+         {
+           "Namespace": "Divmora/LogProcessor",
+           "Dimensions": [["Environment", "Status"], ["Environment"]],
+           "Metrics": [
+             {"Name": "RecordsProcessed", "Unit": "Count"},
+             {"Name": "LicenseViolations", "Unit": "Count"},
+             {"Name": "ActiveMonitoredResources", "Unit": "Count"}
+           ]
+         }
+       ]
+     },
+     "Environment": "production",
+     "Status": "active",
+     "RecordsProcessed": 1500,
+     "LicenseViolations": 0,
+     "ActiveMonitoredResources": 18
+   }
+   ```
+
+---
+
+## 6. Commercial License Activation & Configuration
 
 Commercial licenses are cryptographically signed Ed25519 tokens (format `DIV1.<payload>.<sig>`). Configure tokens via any of the following methods:
 
@@ -147,7 +242,7 @@ export DIVMORA_LICENSE_MODE="strict" # or "warn"
 
 ---
 
-## 6. Verifying License & Plan Status
+## 7. Verifying License & Plan Status
 
 ### Using `license-cli`
 
@@ -166,7 +261,7 @@ license-cli verify -license /path/to/license.key -product otel-aws-log-processor
 
 ---
 
-## 7. Commercial Inquiries & Subscriptions
+## 8. Commercial Inquiries & Subscriptions
 
 To acquire a commercial **Pro** or **Enterprise** subscription, add custom feature flags, or request offline air-gapped node licenses:
 

@@ -8,12 +8,15 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambdacontext"
 	liblicense "github.com/divmora/license-go/pkg/license"
 	"github.com/divmora/otel-aws-log-processor/pkg/model"
+	"github.com/divmora/otel-aws-log-processor/pkg/utils"
 	"github.com/divmora/otel-aws-log-processor/pkg/version"
 )
 
@@ -93,26 +96,235 @@ func ResolveToken(key, file string) (string, error) {
 	return strings.TrimSpace(token), nil
 }
 
+// ResourceTracker maintains in-container thread-safe tracking of active unique monitored resource identifiers.
+type ResourceTracker struct {
+	mu        sync.RWMutex
+	resources map[string]struct{}
+}
+
+// NewResourceTracker initializes a new thread-safe ResourceTracker.
+func NewResourceTracker() *ResourceTracker {
+	return &ResourceTracker{
+		resources: make(map[string]struct{}),
+	}
+}
+
+// Track registers a resource identifier and returns the current total unique count and whether it was newly added.
+func (rt *ResourceTracker) Track(resourceID string) (int, bool) {
+	resourceID = strings.TrimSpace(resourceID)
+	if resourceID == "" {
+		if rt == nil {
+			return 0, false
+		}
+		rt.mu.RLock()
+		defer rt.mu.RUnlock()
+		return len(rt.resources), false
+	}
+
+	if rt == nil {
+		return 0, false
+	}
+
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	if _, exists := rt.resources[resourceID]; exists {
+		return len(rt.resources), false
+	}
+	rt.resources[resourceID] = struct{}{}
+	return len(rt.resources), true
+}
+
+// Count returns the number of unique monitored resources observed in this container lifecycle.
+func (rt *ResourceTracker) Count() int {
+	if rt == nil {
+		return 0
+	}
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	return len(rt.resources)
+}
+
+// Resources returns a copy of all unique tracked resource identifiers.
+func (rt *ResourceTracker) Resources() []string {
+	if rt == nil {
+		return nil
+	}
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	res := make([]string, 0, len(rt.resources))
+	for k := range rt.resources {
+		res = append(res, k)
+	}
+	return res
+}
+
+// Reset clears the tracker state (primarily used in testing).
+func (rt *ResourceTracker) Reset() {
+	if rt == nil {
+		return
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	rt.resources = make(map[string]struct{})
+}
+
+var (
+	albNlbKeyPattern    = regexp.MustCompile(`_elasticloadbalancing_[^_]+_(app|net)\.([^.]+)\.([^._]+)_`)
+	cfKeyPattern        = regexp.MustCompile(`(?:^|/)([A-Z0-9]{8,32})\.\d{4}-\d{2}-\d{2}`)
+	cfParquetPattern    = regexp.MustCompile(`(?:^|/)([A-Z0-9]{8,32})[._]`)
+	wafKeyPattern       = regexp.MustCompile(`aws-waf-logs-([^/]+)`)
+	awsLogsAccountRegex = regexp.MustCompile(`(?:^|/)AWSLogs/(\d{12})/`)
+)
+
+// ExtractResourceFromAttributes extracts the canonical AWS resource ARN and short identifier
+// from OpenTelemetry resource attributes.
+func ExtractResourceFromAttributes(attrs []model.OTelAttribute) (arn string, shortID string) {
+	var lbName, distID, webACLID, accountID, region string
+	for _, attr := range attrs {
+		if attr.Value.StringValue == nil {
+			continue
+		}
+		val := *attr.Value.StringValue
+		switch attr.Key {
+		case "aws.lb.name":
+			lbName = val
+		case "aws.cloudfront.distribution_id":
+			distID = val
+		case "aws.waf.web_acl_id":
+			webACLID = val
+		case "cloud.account.id":
+			accountID = val
+		case "cloud.region":
+			region = val
+		}
+	}
+
+	if lbName != "" {
+		shortID = lbName
+		if region != "" && accountID != "" {
+			arn = fmt.Sprintf("arn:aws:elasticloadbalancing:%s:%s:loadbalancer/%s", region, accountID, lbName)
+		} else {
+			arn = lbName
+		}
+		return arn, shortID
+	}
+
+	if distID != "" {
+		shortID = distID
+		if accountID != "" {
+			arn = fmt.Sprintf("arn:aws:cloudfront::%s:distribution/%s", accountID, distID)
+		} else {
+			arn = fmt.Sprintf("arn:aws:cloudfront:::distribution/%s", distID)
+		}
+		return arn, shortID
+	}
+
+	if webACLID != "" {
+		shortID = webACLID
+		if strings.HasPrefix(webACLID, "arn:aws:") {
+			arn = webACLID
+		} else if accountID != "" {
+			if region == "" || region == "global" {
+				arn = fmt.Sprintf("arn:aws:wafv2::%s:global/webacl/%s", accountID, webACLID)
+			} else {
+				arn = fmt.Sprintf("arn:aws:wafv2:%s:%s:regional/webacl/%s", region, accountID, webACLID)
+			}
+		} else {
+			arn = webACLID
+		}
+		return arn, shortID
+	}
+
+	return "", ""
+}
+
+// ExtractResourceFromS3Key extracts the canonical AWS resource ARN and short identifier
+// from standard AWS S3 log object keys.
+func ExtractResourceFromS3Key(key string) (arn string, shortID string) {
+	accountID, region := utils.ParseRegionAccountFromS3Key(key)
+	if accountID == "" {
+		if m := awsLogsAccountRegex.FindStringSubmatch(key); len(m) >= 2 {
+			accountID = m[1]
+		}
+	}
+
+	if matches := albNlbKeyPattern.FindStringSubmatch(key); len(matches) >= 4 {
+		lbType := matches[1]
+		lbName := matches[2]
+		lbHash := matches[3]
+		shortID = fmt.Sprintf("%s/%s/%s", lbType, lbName, lbHash)
+		if region != "" && accountID != "" {
+			arn = fmt.Sprintf("arn:aws:elasticloadbalancing:%s:%s:loadbalancer/%s", region, accountID, shortID)
+		} else {
+			arn = shortID
+		}
+		return arn, shortID
+	}
+
+	if matches := cfKeyPattern.FindStringSubmatch(key); len(matches) >= 2 {
+		shortID = matches[1]
+		if accountID != "" {
+			arn = fmt.Sprintf("arn:aws:cloudfront::%s:distribution/%s", accountID, shortID)
+		} else {
+			arn = fmt.Sprintf("arn:aws:cloudfront:::distribution/%s", shortID)
+		}
+		return arn, shortID
+	}
+
+	if strings.HasSuffix(key, ".parquet") {
+		if matches := cfParquetPattern.FindStringSubmatch(key); len(matches) >= 2 {
+			shortID = matches[1]
+			if accountID != "" {
+				arn = fmt.Sprintf("arn:aws:cloudfront::%s:distribution/%s", accountID, shortID)
+			} else {
+				arn = fmt.Sprintf("arn:aws:cloudfront:::distribution/%s", shortID)
+			}
+			return arn, shortID
+		}
+	}
+
+	if matches := wafKeyPattern.FindStringSubmatch(key); len(matches) >= 2 {
+		shortID = matches[1]
+		if strings.HasPrefix(shortID, "arn:aws:") {
+			arn = shortID
+		} else if accountID != "" {
+			if region == "" || region == "global" {
+				arn = fmt.Sprintf("arn:aws:wafv2::%s:global/webacl/%s", accountID, shortID)
+			} else {
+				arn = fmt.Sprintf("arn:aws:wafv2:%s:%s:regional/webacl/%s", region, accountID, shortID)
+			}
+		} else {
+			arn = shortID
+		}
+		return arn, shortID
+	}
+
+	return "", ""
+}
+
 // EnforcementOptions encapsulates the operational parameters required to evaluate
 // compliance with the Business Source License 1.1 terms.
 type EnforcementOptions struct {
-	Context           context.Context
-	Environment       string
-	LicenseKey        string
-	LicenseFile       string
-	CRL               string // Optional explicit inline CRL token or PEM block
-	CRLFile           string // Optional explicit path to CRL file
-	CRLURL            string // Optional explicit remote CRL URL for online synchronization
-	EnforcementMode   string // "warn" (default) or "strict"
-	CallerAccountID   string
-	SourceAccountIDs  []string
-	BatchRecordCount  int
-	QuotaTracker      *QuotaTracker
-	BucketName        string
-	ExercisedFeatures []string
-	PublicKey         ed25519.PublicKey
-	EvaluationTime    time.Time
-	AuthoritativeTime time.Time
+	Context            context.Context
+	Environment        string
+	LicenseKey         string
+	LicenseFile        string
+	CRL                string // Optional explicit inline CRL token or PEM block
+	CRLFile            string // Optional explicit path to CRL file
+	CRLURL             string // Optional explicit remote CRL URL for online synchronization
+	EnforcementMode    string // "warn" (default) or "strict"
+	CallerAccountID    string
+	SourceAccountIDs   []string
+	SourceResourceARNs []string // Unique resource ARNs or identifiers extracted from logs
+	BatchRecordCount   int
+	QuotaTracker       *QuotaTracker
+	ResourceTracker    *ResourceTracker
+	BucketName         string
+	ExercisedFeatures  []string
+	PublicKey          ed25519.PublicKey
+	EvaluationTime     time.Time
+	AuthoritativeTime  time.Time
 }
 
 // Enforce evaluates the execution against the Business Source License 1.1 terms:
@@ -352,6 +564,58 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 		}
 	}
 
+	// Verify Resource Entitlements for Source Resource ARNs against AllowedResources
+	for _, resARN := range opts.SourceResourceARNs {
+		resARN = strings.TrimSpace(resARN)
+		if resARN == "" {
+			continue
+		}
+		if !status.Claims.IsResourceAllowed(resARN) {
+			mismatchMsg := fmt.Sprintf("COMMERCIAL LICENSE RESOURCE NOT ALLOWED: License does not authorize resource '%s' (allowed: %v)",
+				resARN, GetAllowedResources(status.Claims))
+			slog.Warn(mismatchMsg, "resource", resARN, "contact", "licensing@divmora.com")
+			status.Valid = false
+			status.StatusReason = "resource_not_allowed"
+			status.Message = mismatchMsg
+
+			if mode == "strict" {
+				return status, fmt.Errorf("%s: %w", mismatchMsg, ErrResourceNotAllowed)
+			}
+			return status, nil
+		}
+	}
+
+	// Track and verify Monitored Resource Quota (MaxResources)
+	if opts.ResourceTracker != nil {
+		for _, res := range opts.SourceResourceARNs {
+			if res != "" {
+				opts.ResourceTracker.Track(res)
+			}
+		}
+	}
+
+	maxResources := GetMaxResources(status.Claims)
+	activeResources := 0
+	if opts.ResourceTracker != nil {
+		activeResources = opts.ResourceTracker.Count()
+	} else {
+		activeResources = len(opts.SourceResourceARNs)
+	}
+
+	if maxResources > 0 && activeResources > maxResources {
+		quotaMsg := fmt.Sprintf("COMMERCIAL LICENSE RESOURCE QUOTA EXCEEDED: Active monitored resources (%d) exceeds authorized quota (%d)",
+			activeResources, maxResources)
+		slog.Warn(quotaMsg, "active_resources", activeResources, "max_resources", maxResources, "contact", "licensing@divmora.com")
+		status.Valid = false
+		status.StatusReason = "resource_quota_exceeded"
+		status.Message = quotaMsg
+
+		if mode == "strict" {
+			return status, fmt.Errorf("%s: %w", quotaMsg, ErrResourceQuotaExceeded)
+		}
+		return status, nil
+	}
+
 	// Handle Grace Period Notices
 	if status.InGracePeriod {
 		slog.Warn("COMMERCIAL LICENSE NOTICE: License has expired but is operating within its grace period",
@@ -376,6 +640,7 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 // before downloading and decompressing S3 log objects.
 func PreflightEnforce(opts EnforcementOptions) (*ValidationStatus, error) {
 	opts.SourceAccountIDs = nil
+	opts.SourceResourceARNs = nil
 	opts.ExercisedFeatures = nil
 	opts.BatchRecordCount = 0
 	return Enforce(opts)
@@ -406,24 +671,39 @@ func AppendLicenseAttributes(attrs []model.OTelAttribute, status *ValidationStat
 	if accountID != "" {
 		model.AddAttr(&attrs, "divmora.license.account", accountID)
 	}
+	if status.Claims != nil && status.Claims.Scope != nil && status.Claims.Scope.MaxResources > 0 {
+		model.AddInt64Attr(&attrs, "divmora.license.max_resources", int64(status.Claims.Scope.MaxResources))
+	}
 
 	return attrs
 }
 
 // EmitCloudWatchEMF writes an asynchronous CloudWatch Embedded Metric Format (EMF) log
 // to stdout with zero API latency.
-func EmitCloudWatchEMF(status *ValidationStatus, env string, recordsProcessed int) {
+func EmitCloudWatchEMF(status *ValidationStatus, env string, recordsProcessed int, monitoredResources ...int) {
 	statusTag := "unknown"
 	if status != nil {
 		statusTag = status.StatusReason
 	}
 
 	violations := 0
-	if status != nil && (status.StatusReason == "unlicensed_production" || status.StatusReason == "revoked" || status.StatusReason == "feature_not_entitled" || status.QuotaExceeded) {
+	if status != nil && (status.StatusReason == "unlicensed_production" ||
+		status.StatusReason == "revoked" ||
+		status.StatusReason == "feature_not_entitled" ||
+		status.StatusReason == "resource_quota_exceeded" ||
+		status.StatusReason == "resource_not_allowed" ||
+		status.StatusReason == "account_mismatch" ||
+		status.StatusReason == "source_account_mismatch" ||
+		status.QuotaExceeded) {
 		violations = 1
 	}
 
-	if recordsProcessed <= 0 && violations == 0 {
+	activeRes := 0
+	if len(monitoredResources) > 0 && monitoredResources[0] >= 0 {
+		activeRes = monitoredResources[0]
+	}
+
+	if recordsProcessed <= 0 && violations == 0 && activeRes == 0 {
 		return
 	}
 
@@ -440,14 +720,16 @@ func EmitCloudWatchEMF(status *ValidationStatus, env string, recordsProcessed in
 					"Metrics": []map[string]string{
 						{"Name": "RecordsProcessed", "Unit": "Count"},
 						{"Name": "LicenseViolations", "Unit": "Count"},
+						{"Name": "ActiveMonitoredResources", "Unit": "Count"},
 					},
 				},
 			},
 		},
-		"Environment":       env,
-		"Status":            statusTag,
-		"RecordsProcessed":  recordsProcessed,
-		"LicenseViolations": violations,
+		"Environment":              env,
+		"Status":                   statusTag,
+		"RecordsProcessed":         recordsProcessed,
+		"LicenseViolations":        violations,
+		"ActiveMonitoredResources": activeRes,
 	}
 
 	bytes, err := json.Marshal(emf)
