@@ -264,7 +264,14 @@ When cumulative volume breaches the fair-use quota:
   ```
   [WARN_FAIR_USE_THROUGHPUT_EXCEEDED] Monthly log volume has exceeded the licensed fair-use allocation (Allocated: 25 TB). Telemetry processing continues uninterrupted without data loss. Please contact licensing@divmora.com to adjust your commitment tier.
   ```
-- **CloudWatch EMF Metric**: The runtime emits custom metric `BytesProcessed` under namespaces `Divmora/LogProcessor` (Unit: Bytes) and `Divmora/License` with dimensions `[LicenseID, Tier, ResourceARN]` to enable automated billing audit synchronization and true-up invoicing.
+- **CloudWatch EMF Metric**: The runtime emits custom metric `BytesProcessed` under namespaces `Divmora/LogProcessor` (Unit: Bytes) and `Divmora/License` with dimensions `[LicenseID, Tier, Region]` and `[LicenseID, Tier, ResourceARN]` to enable automated billing audit synchronization and true-up invoicing.
+
+### 6.5 Centralized Metrics Region & Multi-Region Aggregation
+In enterprise multi-region deployments, Lambda processors can be deployed across any AWS region (e.g. `eu-west-1`, `us-west-2`, `ap-southeast-1`), while operational and licensing metrics must aggregate into a single centralized region:
+- **Authoritative Resolution**: The target metrics region is determined strictly from the cryptographically signed license metadata (`claims.Metadata["metrics_region"]` or `"cloudwatch_metrics_region"`), defaulting strictly to **`us-east-1`**. Environment variable overrides are deliberately excluded to ensure deterministic aggregation and prevent quota splitting across stacks.
+- **Zero-Latency In-Region Ingestion**: When running in the central region (`currentRegion == centralRegion`), metrics are emitted via EMF to `stdout` with 0ms network latency and zero API cost.
+- **Automated Cross-Region Dispatch**: When running in a remote region (`currentRegion != centralRegion`), the runtime emits local EMF to `stdout` and automatically dispatches `PutMetricData` directly across regions to the central metrics region via the AWS CloudWatch SDK.
+- **Unified Global Aggregation with Regional Attribution**: The `Region` dimension records the source execution region, allowing single-query global aggregation (`SUM(BytesProcessed)`) in the central region while preserving full regional observability.
 
 ---
 

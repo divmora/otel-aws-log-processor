@@ -1,6 +1,7 @@
 package license
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	liblicense "github.com/divmora/license-go/pkg/license"
 	"github.com/divmora/otel-aws-log-processor/pkg/model"
 )
@@ -2135,4 +2137,226 @@ func TestEmitCloudWatchEMF_WithBytesProcessed(t *testing.T) {
 	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
 		t.Fatalf("invalid JSON output from FormatEMFPayload: %v", err)
 	}
+	if parsed["CentralMetricsRegion"] != "us-east-1" {
+		t.Errorf("got CentralMetricsRegion %v, want us-east-1", parsed["CentralMetricsRegion"])
+	}
+}
+
+func TestResolveCentralMetricsRegion(t *testing.T) {
+	t.Run("FromMetadata_MetricsRegion", func(t *testing.T) {
+		claims := &Claims{
+			Metadata: map[string]string{
+				"metrics_region": "eu-central-1",
+			},
+		}
+		if r := ResolveCentralMetricsRegion(claims); r != "eu-central-1" {
+			t.Errorf("got %q, want eu-central-1", r)
+		}
+	})
+
+	t.Run("FromMetadata_CloudWatchMetricsRegion", func(t *testing.T) {
+		claims := &Claims{
+			Metadata: map[string]string{
+				"cloudwatch_metrics_region": "us-west-2",
+			},
+		}
+		if r := ResolveCentralMetricsRegion(claims); r != "us-west-2" {
+			t.Errorf("got %q, want us-west-2", r)
+		}
+	})
+
+	t.Run("EmptyMetadata_DefaultsToUsEast1", func(t *testing.T) {
+		claims := &Claims{
+			Metadata: map[string]string{},
+		}
+		if r := ResolveCentralMetricsRegion(claims); r != "us-east-1" {
+			t.Errorf("got %q, want us-east-1", r)
+		}
+	})
+
+	t.Run("NilClaims_DefaultsToUsEast1", func(t *testing.T) {
+		if r := ResolveCentralMetricsRegion(nil); r != "us-east-1" {
+			t.Errorf("got %q, want us-east-1", r)
+		}
+	})
+
+	t.Run("StrictNoEnvVarOverride", func(t *testing.T) {
+		// Even if an operator or malicious user sets CLOUDWATCH_METRICS_REGION,
+		// the signed license metadata must remain authoritative to prevent quota tampering or configuration drift.
+		t.Setenv("CLOUDWATCH_METRICS_REGION", "ap-southeast-1")
+		claims := &Claims{
+			Metadata: map[string]string{
+				"metrics_region": "eu-west-1",
+			},
+		}
+		if r := ResolveCentralMetricsRegion(claims); r != "eu-west-1" {
+			t.Errorf("got %q, want eu-west-1 (env var override must be ignored)", r)
+		}
+
+		// When metadata is empty, it strictly defaults to us-east-1, NOT the env var!
+		emptyClaims := &Claims{}
+		if r := ResolveCentralMetricsRegion(emptyClaims); r != "us-east-1" {
+			t.Errorf("got %q, want us-east-1 (env var must not override default)", r)
+		}
+	})
+}
+
+func TestGetCurrentRegion(t *testing.T) {
+	t.Run("AWSRegion_Set", func(t *testing.T) {
+		t.Setenv("AWS_REGION", "eu-west-1")
+		t.Setenv("AWS_DEFAULT_REGION", "us-west-2")
+		if r := GetCurrentRegion(); r != "eu-west-1" {
+			t.Errorf("got %q, want eu-west-1", r)
+		}
+	})
+
+	t.Run("AWSDefaultRegion_Fallback", func(t *testing.T) {
+		t.Setenv("AWS_REGION", "")
+		t.Setenv("AWS_DEFAULT_REGION", "sa-east-1")
+		if r := GetCurrentRegion(); r != "sa-east-1" {
+			t.Errorf("got %q, want sa-east-1", r)
+		}
+	})
+
+	t.Run("Default_UsEast1", func(t *testing.T) {
+		t.Setenv("AWS_REGION", "")
+		t.Setenv("AWS_DEFAULT_REGION", "")
+		if r := GetCurrentRegion(); r != "us-east-1" {
+			t.Errorf("got %q, want us-east-1", r)
+		}
+	})
+}
+
+type mockCloudWatchMetricAPI struct {
+	mu    sync.Mutex
+	calls []*cloudwatch.PutMetricDataInput
+	err   error
+}
+
+func (m *mockCloudWatchMetricAPI) PutMetricData(ctx context.Context, params *cloudwatch.PutMetricDataInput, optFns ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, params)
+	return &cloudwatch.PutMetricDataOutput{}, m.err
+}
+
+func TestPublishCrossRegionMetrics(t *testing.T) {
+	mockCW := &mockCloudWatchMetricAPI{}
+	t.Setenv("AWS_REGION", "eu-central-1")
+
+	status := &ValidationStatus{
+		Valid:        true,
+		StatusReason: "valid",
+		Claims: &Claims{
+			ID:   "lic_cross_reg_test",
+			Plan: TierPro,
+			Metadata: map[string]string{
+				"metrics_region": "us-east-1",
+			},
+		},
+	}
+
+	err := PublishCrossRegionMetrics(context.Background(), mockCW, status, "production", 500, 3, int64(2048000), []string{"arn:aws:elasticloadbalancing:eu-central-1:123456789012:loadbalancer/app/test-alb/123"})
+	if err != nil {
+		t.Fatalf("PublishCrossRegionMetrics failed: %v", err)
+	}
+
+	mockCW.mu.Lock()
+	defer mockCW.mu.Unlock()
+
+	if len(mockCW.calls) != 2 {
+		t.Fatalf("expected 2 PutMetricData calls (Divmora/LogProcessor and Divmora/License), got %d", len(mockCW.calls))
+	}
+
+	// Verify Divmora/LogProcessor
+	call1 := mockCW.calls[0]
+	if *call1.Namespace != "Divmora/LogProcessor" {
+		t.Errorf("call 0 namespace: got %s, want Divmora/LogProcessor", *call1.Namespace)
+	}
+
+	// Verify Divmora/License
+	call2 := mockCW.calls[1]
+	if *call2.Namespace != "Divmora/License" {
+		t.Errorf("call 1 namespace: got %s, want Divmora/License", *call2.Namespace)
+	}
+
+	// Verify that Region dimension on metric datums reflects the current execution region (eu-central-1)
+	hasExecutingRegion := false
+	for _, datum := range call2.MetricData {
+		for _, dim := range datum.Dimensions {
+			if *dim.Name == "Region" && *dim.Value == "eu-central-1" {
+				hasExecutingRegion = true
+				break
+			}
+		}
+	}
+	if !hasExecutingRegion {
+		t.Errorf("expected Region=eu-central-1 dimension in License metric data")
+	}
+}
+
+func TestEmitMetrics_Routing(t *testing.T) {
+	t.Run("SameRegion_SkipsSDKCall", func(t *testing.T) {
+		t.Setenv("AWS_REGION", "us-east-1")
+		mockCW := &mockCloudWatchMetricAPI{}
+
+		status := &ValidationStatus{
+			Valid:        true,
+			StatusReason: "valid",
+			Claims: &Claims{
+				ID:   "lic_same_reg",
+				Plan: TierEnterprise,
+				Metadata: map[string]string{
+					"metrics_region": "us-east-1",
+				},
+			},
+		}
+
+		factoryCalled := false
+		cwFactory := func(targetRegion string) CloudWatchMetricAPI {
+			factoryCalled = true
+			return mockCW
+		}
+
+		EmitMetrics(context.Background(), cwFactory, status, "production", 100, 1, int64(1024), []string{"arn:aws:alb:1"})
+
+		if factoryCalled {
+			t.Error("expected cwFactory NOT to be called when current region == central region")
+		}
+		if len(mockCW.calls) != 0 {
+			t.Errorf("expected 0 SDK calls for same-region, got %d", len(mockCW.calls))
+		}
+	})
+
+	t.Run("CrossRegion_InvokesSDKCallWithCentralRegion", func(t *testing.T) {
+		t.Setenv("AWS_REGION", "ap-southeast-1")
+		mockCW := &mockCloudWatchMetricAPI{}
+
+		status := &ValidationStatus{
+			Valid:        true,
+			StatusReason: "valid",
+			Claims: &Claims{
+				ID:   "lic_cross_reg",
+				Plan: TierEnterprise,
+				Metadata: map[string]string{
+					"metrics_region": "us-east-1",
+				},
+			},
+		}
+
+		var targetRegionReceived string
+		cwFactory := func(targetRegion string) CloudWatchMetricAPI {
+			targetRegionReceived = targetRegion
+			return mockCW
+		}
+
+		EmitMetrics(context.Background(), cwFactory, status, "production", 200, 2, int64(2048), []string{"arn:aws:alb:2"})
+
+		if targetRegionReceived != "us-east-1" {
+			t.Errorf("cwFactory received targetRegion %q, want us-east-1", targetRegionReceived)
+		}
+		if len(mockCW.calls) == 0 {
+			t.Error("expected cross-region SDK calls to be made, got 0")
+		}
+	})
 }

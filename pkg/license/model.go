@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path"
 	"regexp"
 	"strings"
@@ -598,6 +599,34 @@ func GetMaxMonthlyTB(c *Claims) int {
 		return 0
 	}
 	return c.Limits.MaxMonthlyTB
+}
+
+// ResolveCentralMetricsRegion extracts the authoritative centralized CloudWatch metrics region
+// from the cryptographically signed license claims metadata, strictly defaulting to "us-east-1".
+// No environment variable overrides are permitted to ensure uniform aggregation across all deployed regions.
+func ResolveCentralMetricsRegion(c *Claims) string {
+	if c != nil && c.Metadata != nil {
+		if r, ok := c.Metadata["metrics_region"]; ok && strings.TrimSpace(r) != "" {
+			return strings.TrimSpace(r)
+		}
+		if r, ok := c.Metadata["cloudwatch_metrics_region"]; ok && strings.TrimSpace(r) != "" {
+			return strings.TrimSpace(r)
+		}
+	}
+	return "us-east-1"
+}
+
+// GetCurrentRegion returns the executing AWS region resolved from standard AWS execution environment variables.
+// Defaults strictly to "us-east-1" if unset.
+func GetCurrentRegion() string {
+	r := os.Getenv("AWS_REGION")
+	if r == "" {
+		r = os.Getenv("AWS_DEFAULT_REGION")
+	}
+	if r == "" {
+		r = "us-east-1"
+	}
+	return strings.TrimSpace(r)
 }
 
 // ValidationStatus represents the outcome of evaluating license compliance for an execution.

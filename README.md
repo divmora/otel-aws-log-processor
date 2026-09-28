@@ -241,7 +241,8 @@ Commercial licenses decouple charging units from raw AWS account counts, using *
 - **`claims.Scope.AllowedResources`**: Optional list of allowed ARNs, wildcard glob patterns (`arn:aws:elasticloadbalancing:*:*:loadbalancer/app/*`), or short resource IDs (e.g., CloudFront distribution IDs).
 - **`claims.Scope.MaxAccounts`**: Maximum number of spoke AWS Accounts permitted.
 - **In-Memory Tracking**: Thread-safe `ResourceTracker` and lock-free `QuotaTracker` deduplicate active resources and meter uncompressed stream bytes with `<0.5%` CPU overhead.
-- **CloudWatch EMF Metrics**: Emits `BytesProcessed` (Bytes) and `ActiveMonitoredResources` gauges alongside `RecordsProcessed` and `LicenseViolations` under `Divmora/LogProcessor` and `Divmora/License` namespaces for real-time FinOps monitoring.
+- **CloudWatch EMF & Cross-Region Metrics**: Emits `BytesProcessed` (Bytes) and `ActiveMonitoredResources` gauges alongside `RecordsProcessed` and `LicenseViolations` under `Divmora/LogProcessor` and `Divmora/License` namespaces for real-time FinOps monitoring.
+- **Centralized Multi-Region Aggregation**: Metrics automatically aggregate into the central region specified in the signed license metadata (`claims.Metadata["metrics_region"]`, defaulting to `us-east-1`), enabling single-pane FinOps monitoring across all regional Lambda deployments without manual environment variable configuration.
 
 ### Production Enforcement Modes
 

@@ -14,6 +14,9 @@ import (
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambdacontext"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
+	cwtypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 	liblicense "github.com/divmora/license-go/pkg/license"
 	"github.com/divmora/otel-aws-log-processor/pkg/model"
 	"github.com/divmora/otel-aws-log-processor/pkg/utils"
@@ -765,12 +768,12 @@ func BuildEMFPayload(status *ValidationStatus, env string, recordsProcessed int,
 		primaryResource = resourceARNs[0]
 	}
 
-	region := os.Getenv("AWS_REGION")
-	if region == "" {
-		region = os.Getenv("AWS_DEFAULT_REGION")
-	}
-	if region == "" {
-		region = "us-east-1"
+	region := GetCurrentRegion()
+	var centralRegion string
+	if status != nil && status.Claims != nil {
+		centralRegion = ResolveCentralMetricsRegion(status.Claims)
+	} else {
+		centralRegion = ResolveCentralMetricsRegion(nil)
 	}
 
 	cloudWatchMetrics := []map[string]any{
@@ -815,6 +818,7 @@ func BuildEMFPayload(status *ValidationStatus, env string, recordsProcessed int,
 		},
 		"Environment":              env,
 		"Region":                   region,
+		"CentralMetricsRegion":     centralRegion,
 		"Status":                   statusTag,
 		"RecordsProcessed":         recordsProcessed,
 		"BytesProcessed":           bytesProcessed,
@@ -856,6 +860,232 @@ func EmitCloudWatchEMF(status *ValidationStatus, env string, recordsProcessed in
 	if err == nil && str != "" {
 		// Write directly to stdout for CloudWatch ingestion
 		fmt.Println(str)
+	}
+}
+
+// CloudWatchMetricAPI defines the interface for publishing metric data to Amazon CloudWatch.
+type CloudWatchMetricAPI interface {
+	PutMetricData(ctx context.Context, params *cloudwatch.PutMetricDataInput, optFns ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error)
+}
+
+// CloudWatchClientFactory resolves a regional CloudWatch client for cross-region metric dispatch.
+type CloudWatchClientFactory func(targetRegion string) CloudWatchMetricAPI
+
+// PublishCrossRegionMetrics sends metrics directly to the target centralized region via CloudWatch PutMetricData API.
+// It is invoked when the executing Lambda region differs from the central metrics region.
+func PublishCrossRegionMetrics(ctx context.Context, cw CloudWatchMetricAPI, status *ValidationStatus, env string, recordsProcessed int, extra ...any) error {
+	if cw == nil {
+		return nil
+	}
+
+	var activeRes int
+	var bytesProcessed int64
+	var resourceARNs []string
+
+	if len(extra) > 0 {
+		if v, ok := extra[0].(int); ok {
+			activeRes = v
+		}
+	}
+	if len(extra) > 1 {
+		switch v := extra[1].(type) {
+		case int64:
+			bytesProcessed = v
+		case int:
+			bytesProcessed = int64(v)
+		}
+	}
+	if len(extra) > 2 {
+		switch v := extra[2].(type) {
+		case []string:
+			resourceARNs = v
+		case string:
+			if v != "" {
+				resourceARNs = []string{v}
+			}
+		}
+	}
+
+	var violations int
+	statusTag := "unlicensed_production"
+	if status != nil {
+		statusTag = status.StatusReason
+		if !status.Valid {
+			violations = 1
+		}
+	}
+
+	if recordsProcessed <= 0 && bytesProcessed <= 0 && violations == 0 && activeRes == 0 {
+		return nil
+	}
+
+	currentRegion := GetCurrentRegion()
+
+	var licenseID, tier, primaryResource string
+	if status != nil && status.Claims != nil {
+		licenseID = status.Claims.ID
+		tier = GetClaimsPlan(status.Claims)
+	}
+	if len(resourceARNs) > 0 {
+		primaryResource = resourceARNs[0]
+	}
+
+	now := time.Now().UTC()
+
+	// 1. Divmora/LogProcessor metrics
+	dimsFull := []cwtypes.Dimension{
+		{Name: aws.String("Environment"), Value: aws.String(env)},
+		{Name: aws.String("Status"), Value: aws.String(statusTag)},
+		{Name: aws.String("Region"), Value: aws.String(currentRegion)},
+	}
+	dimsEnvRegion := []cwtypes.Dimension{
+		{Name: aws.String("Environment"), Value: aws.String(env)},
+		{Name: aws.String("Region"), Value: aws.String(currentRegion)},
+	}
+	dimsEnvOnly := []cwtypes.Dimension{
+		{Name: aws.String("Environment"), Value: aws.String(env)},
+	}
+
+	var logProcessorData []cwtypes.MetricDatum
+	for _, dims := range [][]cwtypes.Dimension{dimsFull, dimsEnvRegion, dimsEnvOnly} {
+		logProcessorData = append(logProcessorData,
+			cwtypes.MetricDatum{
+				MetricName: aws.String("RecordsProcessed"),
+				Value:      aws.Float64(float64(recordsProcessed)),
+				Unit:       cwtypes.StandardUnitCount,
+				Dimensions: dims,
+				Timestamp:  &now,
+			},
+			cwtypes.MetricDatum{
+				MetricName: aws.String("BytesProcessed"),
+				Value:      aws.Float64(float64(bytesProcessed)),
+				Unit:       cwtypes.StandardUnitBytes,
+				Dimensions: dims,
+				Timestamp:  &now,
+			},
+		)
+		if violations > 0 {
+			logProcessorData = append(logProcessorData, cwtypes.MetricDatum{
+				MetricName: aws.String("LicenseViolations"),
+				Value:      aws.Float64(float64(violations)),
+				Unit:       cwtypes.StandardUnitCount,
+				Dimensions: dims,
+				Timestamp:  &now,
+			})
+		}
+		if activeRes > 0 {
+			logProcessorData = append(logProcessorData, cwtypes.MetricDatum{
+				MetricName: aws.String("ActiveMonitoredResources"),
+				Value:      aws.Float64(float64(activeRes)),
+				Unit:       cwtypes.StandardUnitCount,
+				Dimensions: dims,
+				Timestamp:  &now,
+			})
+		}
+	}
+
+	putCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	_, err := cw.PutMetricData(putCtx, &cloudwatch.PutMetricDataInput{
+		Namespace:  aws.String("Divmora/LogProcessor"),
+		MetricData: logProcessorData,
+	})
+	if err != nil {
+		slog.Warn("Failed to send cross-region LogProcessor metric data", "error", err)
+	}
+
+	// 2. Divmora/License metrics (if commercial license present)
+	if licenseID != "" {
+		dimsLicFull := []cwtypes.Dimension{
+			{Name: aws.String("LicenseID"), Value: aws.String(licenseID)},
+			{Name: aws.String("Tier"), Value: aws.String(tier)},
+			{Name: aws.String("Region"), Value: aws.String(currentRegion)},
+		}
+		dimsLicAgg := []cwtypes.Dimension{
+			{Name: aws.String("LicenseID"), Value: aws.String(licenseID)},
+			{Name: aws.String("Tier"), Value: aws.String(tier)},
+		}
+
+		var licenseData []cwtypes.MetricDatum
+		for _, dims := range [][]cwtypes.Dimension{dimsLicFull, dimsLicAgg} {
+			licenseData = append(licenseData,
+				cwtypes.MetricDatum{
+					MetricName: aws.String("BytesProcessed"),
+					Value:      aws.Float64(float64(bytesProcessed)),
+					Unit:       cwtypes.StandardUnitBytes,
+					Dimensions: dims,
+					Timestamp:  &now,
+				},
+				cwtypes.MetricDatum{
+					MetricName: aws.String("RecordsProcessed"),
+					Value:      aws.Float64(float64(recordsProcessed)),
+					Unit:       cwtypes.StandardUnitCount,
+					Dimensions: dims,
+					Timestamp:  &now,
+				},
+			)
+		}
+
+		if primaryResource != "" {
+			dimsLicRes := []cwtypes.Dimension{
+				{Name: aws.String("LicenseID"), Value: aws.String(licenseID)},
+				{Name: aws.String("Tier"), Value: aws.String(tier)},
+				{Name: aws.String("ResourceARN"), Value: aws.String(primaryResource)},
+			}
+			licenseData = append(licenseData,
+				cwtypes.MetricDatum{
+					MetricName: aws.String("BytesProcessed"),
+					Value:      aws.Float64(float64(bytesProcessed)),
+					Unit:       cwtypes.StandardUnitBytes,
+					Dimensions: dimsLicRes,
+					Timestamp:  &now,
+				},
+				cwtypes.MetricDatum{
+					MetricName: aws.String("RecordsProcessed"),
+					Value:      aws.Float64(float64(recordsProcessed)),
+					Unit:       cwtypes.StandardUnitCount,
+					Dimensions: dimsLicRes,
+					Timestamp:  &now,
+				},
+			)
+		}
+
+		_, licErr := cw.PutMetricData(putCtx, &cloudwatch.PutMetricDataInput{
+			Namespace:  aws.String("Divmora/License"),
+			MetricData: licenseData,
+		})
+		if licErr != nil {
+			slog.Warn("Failed to send cross-region License metric data", "error", licErr)
+		}
+	}
+
+	return nil
+}
+
+// EmitMetrics emits metrics to CloudWatch.
+//  1. It always writes Embedded Metric Format (EMF) to stdout for asynchronous zero-latency ingestion in the local region.
+//  2. If the executing region differs from the central metrics region resolved from license metadata (or default us-east-1),
+//     it dispatches PutMetricData to the central region via the provided CloudWatchClientFactory so that metrics are aggregated
+//     uniformly in a single centralized region without any reliance on environment variables.
+func EmitMetrics(ctx context.Context, cwFactory CloudWatchClientFactory, status *ValidationStatus, env string, recordsProcessed int, extra ...any) {
+	// 1. Always emit local EMF stdout
+	EmitCloudWatchEMF(status, env, recordsProcessed, extra...)
+
+	// 2. Cross-region check
+	currentRegion := GetCurrentRegion()
+	var centralRegion string
+	if status != nil && status.Claims != nil {
+		centralRegion = ResolveCentralMetricsRegion(status.Claims)
+	} else {
+		centralRegion = ResolveCentralMetricsRegion(nil)
+	}
+
+	if currentRegion != centralRegion && cwFactory != nil {
+		cw := cwFactory(centralRegion)
+		if cw != nil {
+			_ = PublishCrossRegionMetrics(ctx, cw, status, env, recordsProcessed, extra...)
+		}
 	}
 }
 

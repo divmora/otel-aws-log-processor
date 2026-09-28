@@ -154,7 +154,7 @@ Every batch execution emits metrics in CloudWatch Embedded Metric Format (EMF) u
     "CloudWatchMetrics": [
       {
         "Namespace": "Divmora/LogProcessor",
-        "Dimensions": [["Environment", "Status"], ["Environment"]],
+        "Dimensions": [["Environment", "Status", "Region"], ["Environment", "Region"], ["Environment"]],
         "Metrics": [
           {"Name": "RecordsProcessed", "Unit": "Count"},
           {"Name": "BytesProcessed", "Unit": "Bytes"},
@@ -164,7 +164,7 @@ Every batch execution emits metrics in CloudWatch Embedded Metric Format (EMF) u
       },
       {
         "Namespace": "Divmora/License",
-        "Dimensions": [["LicenseID", "Tier"], ["LicenseID", "Tier", "ResourceARN"]],
+        "Dimensions": [["LicenseID", "Tier", "Region"], ["LicenseID", "Tier"], ["LicenseID", "Tier", "ResourceARN"]],
         "Metrics": [
           {"Name": "BytesProcessed", "Unit": "Bytes"},
           {"Name": "RecordsProcessed", "Unit": "Count"}
@@ -173,6 +173,8 @@ Every batch execution emits metrics in CloudWatch Embedded Metric Format (EMF) u
     ]
   },
   "Environment": "production",
+  "Region": "eu-central-1",
+  "CentralMetricsRegion": "us-east-1",
   "Status": "valid",
   "RecordsProcessed": 1500,
   "BytesProcessed": 10485760,
@@ -180,9 +182,24 @@ Every batch execution emits metrics in CloudWatch Embedded Metric Format (EMF) u
   "ActiveMonitoredResources": 18,
   "LicenseID": "lic_9901abcdef",
   "Tier": "pro",
-  "ResourceARN": "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/api/50dc6c495c0c9188"
+  "ResourceARN": "arn:aws:elasticloadbalancing:eu-central-1:123456789012:loadbalancer/app/api/50dc6c495c0c9188"
 }
 ```
+
+### 3.7 Centralized Cross-Region Metrics Aggregation
+
+In enterprise multi-region deployments, Lambda functions can execute in any AWS region (e.g. `eu-west-1`, `us-west-2`, `ap-southeast-1`), while operational and billing metrics must be aggregated into a single centralized region:
+
+1. **Signed License Metadata Authoritative Source**:
+   The central metrics region is determined directly from the cryptographically signed license token claims:
+   - `claims.Metadata["metrics_region"]` (or `claims.Metadata["cloudwatch_metrics_region"]`)
+   - Default fallback: **`us-east-1`** (the standard AWS billing and global control plane region).
+   - **Zero Environment Variable Dependency**: To guarantee uniform aggregation across all distributed stacks and prevent tenant quota evasion via configuration drift, environment variable overrides are strictly disallowed.
+
+2. **Automated Cross-Region Dispatching**:
+   - **Executing in Central Region (`currentRegion == centralRegion`)**: Emits Embedded Metric Format (EMF) directly to `stdout` with **0ms API latency** and zero AWS PutMetricData API cost.
+   - **Executing in Remote Region (`currentRegion != centralRegion`)**: Emits EMF to local `stdout` for container observability, and automatically dispatches `PutMetricData` directly across regions to the target central region using the AWS CloudWatch SDK.
+   - **Unified Global Aggregation with Regional Drill-Down**: Metrics published to the central region retain the source execution region in the `Region` dimension (`[LicenseID, Tier, Region]`), allowing both global aggregation (`SUM(BytesProcessed)`) and per-region utilization breakdown.
 
 ---
 

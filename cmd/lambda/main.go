@@ -8,7 +8,9 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	eventsPkg "github.com/divmora/otel-aws-log-processor/pkg/events"
@@ -24,6 +26,9 @@ import (
 
 var (
 	s3Client        *s3.Client
+	awsConfig       aws.Config
+	cwClients       = make(map[string]*cloudwatch.Client)
+	cwMu            sync.RWMutex
 	logger          *slog.Logger
 	maxConcurrent   int
 	registry        *processor.Registry
@@ -32,17 +37,39 @@ var (
 	resourceTracker *license.ResourceTracker
 )
 
+func getCloudWatchClient(targetRegion string) license.CloudWatchMetricAPI {
+	cwMu.RLock()
+	client, ok := cwClients[targetRegion]
+	cwMu.RUnlock()
+	if ok {
+		return client
+	}
+
+	cwMu.Lock()
+	defer cwMu.Unlock()
+	if client, ok := cwClients[targetRegion]; ok {
+		return client
+	}
+
+	client = cloudwatch.NewFromConfig(awsConfig, func(o *cloudwatch.Options) {
+		o.Region = targetRegion
+	})
+	cwClients[targetRegion] = client
+	return client
+}
+
 func init() {
 	// Initialize structured logger (JSON format)
 	logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
 	// Initialize AWS SDK v2 configuration and S3 client
-	cfg, err := config.LoadDefaultConfig(context.Background())
+	var err error
+	awsConfig, err = config.LoadDefaultConfig(context.Background())
 	if err != nil {
 		logger.Error("Failed to load AWS SDK configuration", "error", err)
 	}
-	s3Client = s3.NewFromConfig(cfg)
+	s3Client = s3.NewFromConfig(awsConfig)
 
 	// Load configuration from environment
 	otlpEndpoint := utils.GetEnv("OTLP_HTTP_LOGS_ENDPOINT", "http://localhost:4318/v1/logs")
@@ -333,7 +360,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 				"caller_account", callerAccount,
 				"action", failureAction,
 			)
-			license.EmitCloudWatchEMF(licStatus, env, len(allEntries), resourceTracker.Count(), quotaTracker.TotalBytesProcessed(), sourceResources)
+			license.EmitMetrics(ctx, getCloudWatchClient, licStatus, env, len(allEntries), resourceTracker.Count(), quotaTracker.TotalBytesProcessed(), sourceResources)
 
 			if failureAction == "dlq" {
 				for _, rec := range sqsEvent.Records {
@@ -362,8 +389,8 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 		}
 	}
 
-	// Emit CloudWatch EMF Metric (asynchronous stdout)
-	license.EmitCloudWatchEMF(licStatus, env, len(allEntries), resourceTracker.Count(), quotaTracker.TotalBytesProcessed(), sourceResources)
+	// Emit CloudWatch Metric (asynchronous stdout EMF + cross-region PutMetricData if applicable)
+	license.EmitMetrics(ctx, getCloudWatchClient, licStatus, env, len(allEntries), resourceTracker.Count(), quotaTracker.TotalBytesProcessed(), sourceResources)
 
 	logger.Info("Lambda execution completed", "failures", len(response.BatchItemFailures))
 	return response, nil
