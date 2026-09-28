@@ -385,6 +385,14 @@ func claimsFromLibClaims(lc *liblicense.Claims) *Claims {
 			Custom:       lc.Scope.Custom,
 		}
 	}
+	var lim *Limits
+	if lc.Limits != nil {
+		lim = &Limits{
+			MaxMonthlyTB:        int(lc.Limits["max_monthly_tb"]),
+			MaxContainerRecords: lc.Limits["max_container_records"],
+			Raw:                 lc.Limits,
+		}
+	}
 	return &Claims{
 		ID:                   lc.ID,
 		KeyID:                lc.KeyID,
@@ -396,7 +404,7 @@ func claimsFromLibClaims(lc *liblicense.Claims) *Claims {
 		ExpiresAt:            lc.ExpiresAt,
 		GracePeriodDays:      lc.GracePeriodDays,
 		Features:             lc.Features,
-		Limits:               lc.Limits,
+		Limits:               lim,
 		Scope:                s,
 		Environment:          lc.Environment,
 		Fingerprint:          lc.Fingerprint,

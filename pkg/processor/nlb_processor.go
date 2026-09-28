@@ -16,6 +16,11 @@ type NLBProcessor struct {
 	MaxBatchSize  int
 	MaxConcurrent int
 	Parser        parser.LogParser[parser.NLBLogEntry]
+	ByteTracker   ByteTracker
+}
+
+func (p *NLBProcessor) SetByteTracker(bt ByteTracker) {
+	p.ByteTracker = bt
 }
 
 func (p *NLBProcessor) Name() string {
@@ -36,7 +41,7 @@ func (p *NLBProcessor) Process(ctx context.Context, logger *slog.Logger, s3Clien
 			return nil, nil
 		}
 		return NLBAdapter{entry}, nil
-	})
+	}, p.ByteTracker)
 }
 
 // NLBAdapter implementation

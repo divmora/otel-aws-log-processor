@@ -616,6 +616,15 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 		return status, nil
 	}
 
+	// Track and evaluate soft fair-use monthly throughput ceiling
+	maxMonthlyTB := GetMaxMonthlyTB(status.Claims)
+	if maxMonthlyTB > 0 && opts.QuotaTracker != nil {
+		if opts.QuotaTracker.CheckThroughputQuota(maxMonthlyTB) {
+			opts.QuotaTracker.LogFairUseWarningAt(maxMonthlyTB, evalTime)
+			status.ThroughputExceeded = true
+		}
+	}
+
 	// Handle Grace Period Notices
 	if status.InGracePeriod {
 		slog.Warn("COMMERCIAL LICENSE NOTICE: License has expired but is operating within its grace period",
@@ -678,9 +687,12 @@ func AppendLicenseAttributes(attrs []model.OTelAttribute, status *ValidationStat
 	return attrs
 }
 
-// EmitCloudWatchEMF writes an asynchronous CloudWatch Embedded Metric Format (EMF) log
-// to stdout with zero API latency.
-func EmitCloudWatchEMF(status *ValidationStatus, env string, recordsProcessed int, monitoredResources ...int) {
+// BuildEMFPayload constructs the CloudWatch Embedded Metric Format (EMF) map.
+// extra can optionally provide:
+// - extra[0]: active monitored resources count (int)
+// - extra[1]: bytes processed (int64 or int)
+// - extra[2]: resource ARNs ([]string or string)
+func BuildEMFPayload(status *ValidationStatus, env string, recordsProcessed int, extra ...any) map[string]any {
 	statusTag := "unknown"
 	if status != nil {
 		statusTag = status.StatusReason
@@ -699,43 +711,151 @@ func EmitCloudWatchEMF(status *ValidationStatus, env string, recordsProcessed in
 	}
 
 	activeRes := 0
-	if len(monitoredResources) > 0 && monitoredResources[0] >= 0 {
-		activeRes = monitoredResources[0]
+	var bytesProcessed int64
+	var resourceARNs []string
+
+	if len(extra) > 0 {
+		switch v := extra[0].(type) {
+		case int:
+			if v >= 0 {
+				activeRes = v
+			}
+		case int64:
+			if v >= 0 {
+				activeRes = int(v)
+			}
+		}
+	}
+	if len(extra) > 1 {
+		switch v := extra[1].(type) {
+		case int64:
+			if v >= 0 {
+				bytesProcessed = v
+			}
+		case int:
+			if v >= 0 {
+				bytesProcessed = int64(v)
+			}
+		}
+	}
+	if len(extra) > 2 {
+		switch v := extra[2].(type) {
+		case []string:
+			resourceARNs = v
+		case string:
+			if v != "" {
+				resourceARNs = []string{v}
+			}
+		}
 	}
 
-	if recordsProcessed <= 0 && violations == 0 && activeRes == 0 {
-		return
+	if recordsProcessed <= 0 && bytesProcessed <= 0 && violations == 0 && activeRes == 0 {
+		return nil
+	}
+
+	var licenseID string
+	var tier string
+	if status != nil && status.Claims != nil {
+		licenseID = status.Claims.ID
+		tier = GetClaimsPlan(status.Claims)
+	}
+
+	var primaryResource string
+	if len(resourceARNs) > 0 {
+		primaryResource = resourceARNs[0]
+	}
+
+	region := os.Getenv("AWS_REGION")
+	if region == "" {
+		region = os.Getenv("AWS_DEFAULT_REGION")
+	}
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	cloudWatchMetrics := []map[string]any{
+		{
+			"Namespace": "Divmora/LogProcessor",
+			"Dimensions": [][]string{
+				{"Environment", "Status", "Region"},
+				{"Environment", "Region"},
+				{"Environment"},
+			},
+			"Metrics": []map[string]string{
+				{"Name": "RecordsProcessed", "Unit": "Count"},
+				{"Name": "BytesProcessed", "Unit": "Bytes"},
+				{"Name": "LicenseViolations", "Unit": "Count"},
+				{"Name": "ActiveMonitoredResources", "Unit": "Count"},
+			},
+		},
+	}
+
+	if licenseID != "" {
+		licenseDims := [][]string{
+			{"LicenseID", "Tier", "Region"},
+			{"LicenseID", "Tier"},
+		}
+		if primaryResource != "" {
+			licenseDims = append(licenseDims, []string{"LicenseID", "Tier", "ResourceARN"})
+		}
+		cloudWatchMetrics = append(cloudWatchMetrics, map[string]any{
+			"Namespace":  "Divmora/License",
+			"Dimensions": licenseDims,
+			"Metrics": []map[string]string{
+				{"Name": "BytesProcessed", "Unit": "Bytes"},
+				{"Name": "RecordsProcessed", "Unit": "Count"},
+			},
+		})
 	}
 
 	emf := map[string]any{
 		"_aws": map[string]any{
-			"Timestamp": time.Now().UnixMilli(),
-			"CloudWatchMetrics": []map[string]any{
-				{
-					"Namespace": "Divmora/LogProcessor",
-					"Dimensions": [][]string{
-						{"Environment", "Status"},
-						{"Environment"},
-					},
-					"Metrics": []map[string]string{
-						{"Name": "RecordsProcessed", "Unit": "Count"},
-						{"Name": "LicenseViolations", "Unit": "Count"},
-						{"Name": "ActiveMonitoredResources", "Unit": "Count"},
-					},
-				},
-			},
+			"Timestamp":         time.Now().UnixMilli(),
+			"CloudWatchMetrics": cloudWatchMetrics,
 		},
 		"Environment":              env,
+		"Region":                   region,
 		"Status":                   statusTag,
 		"RecordsProcessed":         recordsProcessed,
+		"BytesProcessed":           bytesProcessed,
 		"LicenseViolations":        violations,
 		"ActiveMonitoredResources": activeRes,
 	}
 
-	bytes, err := json.Marshal(emf)
-	if err == nil {
+	if licenseID != "" {
+		emf["LicenseID"] = licenseID
+		emf["Tier"] = tier
+	}
+	if primaryResource != "" {
+		emf["ResourceARN"] = primaryResource
+	}
+	if status != nil && status.ThroughputExceeded {
+		emf["ThroughputExceeded"] = true
+	}
+
+	return emf
+}
+
+// FormatEMFPayload generates the JSON string for CloudWatch Embedded Metric Format (EMF).
+func FormatEMFPayload(status *ValidationStatus, env string, recordsProcessed int, extra ...any) (string, error) {
+	payload := BuildEMFPayload(status, env, recordsProcessed, extra...)
+	if payload == nil {
+		return "", nil
+	}
+	bytes, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return string(bytes), nil
+}
+
+// EmitCloudWatchEMF writes an asynchronous CloudWatch Embedded Metric Format (EMF) log
+// to stdout with zero API latency.
+func EmitCloudWatchEMF(status *ValidationStatus, env string, recordsProcessed int, extra ...any) {
+	str, err := FormatEMFPayload(status, env, recordsProcessed, extra...)
+	if err == nil && str != "" {
 		// Write directly to stdout for CloudWatch ingestion
-		fmt.Println(string(bytes))
+		fmt.Println(str)
 	}
 }
 

@@ -1,6 +1,7 @@
 package license
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
@@ -150,6 +151,46 @@ func (s *Scope) IsRegionAllowed(region string) bool {
 	return matchesScopeSlice(s.Regions, region)
 }
 
+// Limits defines quota thresholds, throughput allocations, and evaluation constraints.
+type Limits struct {
+	// MaxMonthlyTB specifies the fair-use monthly throughput ceiling in Terabytes (0 = uncapped).
+	MaxMonthlyTB int `json:"max_monthly_tb,omitempty"`
+
+	// MaxContainerRecords specifies in-container record limits for non-prod evaluation.
+	MaxContainerRecords int64 `json:"max_container_records,omitempty"`
+
+	// Raw contains all raw numeric limits defined in the claims.
+	Raw map[string]int64 `json:"raw,omitempty"`
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling for Limits to support both structured fields and arbitrary numeric limits.
+func (l *Limits) UnmarshalJSON(data []byte) error {
+	type Alias Limits
+	var aux struct {
+		Alias
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*l = Limits(aux.Alias)
+
+	var raw map[string]int64
+	if err := json.Unmarshal(data, &raw); err == nil {
+		l.Raw = raw
+		if l.MaxMonthlyTB == 0 {
+			if v, ok := raw["max_monthly_tb"]; ok {
+				l.MaxMonthlyTB = int(v)
+			}
+		}
+		if l.MaxContainerRecords == 0 {
+			if v, ok := raw["max_container_records"]; ok {
+				l.MaxContainerRecords = v
+			}
+		}
+	}
+	return nil
+}
+
 // Claims encapsulates the canonical cryptographic claims embedded in a signed license token.
 type Claims struct {
 	// ID is the unique identifier for this license (e.g. UUIDv4).
@@ -182,8 +223,8 @@ type Claims struct {
 	// Features is the list of enabled feature flags/entitlements.
 	Features []string `json:"features,omitempty"`
 
-	// Limits is a map of quota thresholds.
-	Limits map[string]int64 `json:"limits,omitempty"`
+	// Limits defines throughput allocations and quota thresholds.
+	Limits *Limits `json:"limits,omitempty"`
 
 	// Scope defines operational infrastructure, environment, account, region, namespace, and host boundaries.
 	Scope *Scope `json:"scope,omitempty"`
@@ -550,6 +591,15 @@ func IsResourceAllowed(c *Claims, resourceARN string) bool {
 	return c.Scope.IsResourceAllowed(resourceARN)
 }
 
+// GetMaxMonthlyTB returns the fair-use monthly throughput ceiling in Terabytes from Claims.Limits.MaxMonthlyTB.
+// Returns 0 if uncapped or unlimited.
+func GetMaxMonthlyTB(c *Claims) int {
+	if c == nil || c.Limits == nil || c.Limits.MaxMonthlyTB <= 0 {
+		return 0
+	}
+	return c.Limits.MaxMonthlyTB
+}
+
 // ValidationStatus represents the outcome of evaluating license compliance for an execution.
 type ValidationStatus struct {
 	// Valid indicates whether the execution is authorized (either by license, non-prod exemption, or Apache conversion).
@@ -563,6 +613,9 @@ type ValidationStatus struct {
 
 	// QuotaExceeded indicates whether non-production fair-use rate/volume thresholds were exceeded.
 	QuotaExceeded bool `json:"quota_exceeded"`
+
+	// ThroughputExceeded indicates whether fair-use monthly throughput ceiling was exceeded.
+	ThroughputExceeded bool `json:"throughput_exceeded,omitempty"`
 
 	// StatusReason is a machine-readable status tag (e.g. "valid", "grace_period", "unlicensed_production", "non_prod_free", "quota_exceeded").
 	StatusReason string `json:"status_reason"`

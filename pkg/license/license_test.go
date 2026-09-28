@@ -1821,3 +1821,318 @@ func TestResourceExtractionHelpers(t *testing.T) {
 		t.Errorf("got CloudFront Parquet S3 Key shortID %s", cfPKeyShort)
 	}
 }
+
+func TestQuotaTracker_AtomicByteCountingAndConcurrency(t *testing.T) {
+	tracker := NewQuotaTracker()
+
+	// Initial count
+	if tracker.TotalBytesProcessed() != 0 {
+		t.Fatalf("expected initial bytes to be 0, got %d", tracker.TotalBytesProcessed())
+	}
+	if tracker.TotalCompressedBytes() != 0 {
+		t.Fatalf("expected initial compressed bytes to be 0, got %d", tracker.TotalCompressedBytes())
+	}
+
+	// High concurrency stress test: 50 goroutines adding 100 chunks of 1024 bytes
+	numGoroutines := 50
+	chunksPerGoroutine := 100
+	chunkSize := int64(1024)
+	expectedTotal := int64(numGoroutines*chunksPerGoroutine) * chunkSize
+
+	var wg sync.WaitGroup
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < chunksPerGoroutine; j++ {
+				tracker.RecordBytes(chunkSize)
+				tracker.RecordCompressedBytes(chunkSize / 2)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if total := tracker.TotalBytesProcessed(); total != expectedTotal {
+		t.Fatalf("got total bytes %d, want %d", total, expectedTotal)
+	}
+	if totalCompressed := tracker.TotalCompressedBytes(); totalCompressed != expectedTotal/2 {
+		t.Fatalf("got total compressed bytes %d, want %d", totalCompressed, expectedTotal/2)
+	}
+
+	// Non-positive additions should not change count
+	tracker.RecordBytes(0)
+	tracker.RecordBytes(-500)
+	if total := tracker.TotalBytesProcessed(); total != expectedTotal {
+		t.Fatalf("got total bytes %d after non-positive record, want %d", total, expectedTotal)
+	}
+}
+
+func TestQuotaTracker_FairUseWarningRateLimiting(t *testing.T) {
+	tracker := NewQuotaTracker()
+	t0 := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+
+	// 1. First warning at t0 must emit
+	if !tracker.LogFairUseWarningAt(25, t0) {
+		t.Fatal("expected first fair-use warning to be emitted")
+	}
+
+	// 2. Immediate subsequent warning at t0 + 10m must be suppressed
+	if tracker.LogFairUseWarningAt(25, t0.Add(10*time.Minute)) {
+		t.Fatal("expected fair-use warning at +10m to be rate-limited and suppressed")
+	}
+
+	// 3. Warning at t0 + 59m must still be suppressed
+	if tracker.LogFairUseWarningAt(25, t0.Add(59*time.Minute)) {
+		t.Fatal("expected fair-use warning at +59m to be suppressed")
+	}
+
+	// 4. Warning at t0 + 60m (1 hour later) must emit
+	if !tracker.LogFairUseWarningAt(25, t0.Add(60*time.Minute)) {
+		t.Fatal("expected fair-use warning at +60m to be emitted")
+	}
+
+	// 5. Warning at t0 + 75m must be suppressed again
+	if tracker.LogFairUseWarningAt(25, t0.Add(75*time.Minute)) {
+		t.Fatal("expected fair-use warning at +75m to be suppressed")
+	}
+
+	// 6. ResetWarningTime allows immediate re-emission
+	tracker.ResetWarningTime()
+	if !tracker.LogFairUseWarningAt(25, t0.Add(76*time.Minute)) {
+		t.Fatal("expected warning to emit after ResetWarningTime")
+	}
+}
+
+func TestClaims_LimitsAndMaxMonthlyTB(t *testing.T) {
+	// 1. Claims with explicit MaxMonthlyTB and MaxContainerRecords
+	jsonClaims := `{
+		"id": "lic_tb_test",
+		"customer": {"name": "Throughput Customer"},
+		"product": "otel-aws-log-processor",
+		"plan": "pro",
+		"issued_at": "2026-09-01T00:00:00Z",
+		"limits": {
+			"max_monthly_tb": 25,
+			"max_container_records": 50000
+		}
+	}`
+
+	var claims Claims
+	if err := json.Unmarshal([]byte(jsonClaims), &claims); err != nil {
+		t.Fatalf("failed to unmarshal claims: %v", err)
+	}
+
+	if claims.Limits == nil {
+		t.Fatal("expected claims.Limits to not be nil")
+	}
+	if claims.Limits.MaxMonthlyTB != 25 {
+		t.Errorf("got MaxMonthlyTB %d, want 25", claims.Limits.MaxMonthlyTB)
+	}
+	if claims.Limits.MaxContainerRecords != 50000 {
+		t.Errorf("got MaxContainerRecords %d, want 50000", claims.Limits.MaxContainerRecords)
+	}
+	if tb := GetMaxMonthlyTB(&claims); tb != 25 {
+		t.Errorf("got GetMaxMonthlyTB %d, want 25", tb)
+	}
+
+	// 2. Uncapped / omitted limits
+	if tb := GetMaxMonthlyTB(nil); tb != 0 {
+		t.Errorf("got GetMaxMonthlyTB(nil) %d, want 0", tb)
+	}
+	if tb := GetMaxMonthlyTB(&Claims{}); tb != 0 {
+		t.Errorf("got GetMaxMonthlyTB(empty) %d, want 0", tb)
+	}
+	if tb := GetMaxMonthlyTB(&Claims{Limits: &Limits{MaxMonthlyTB: 0}}); tb != 0 {
+		t.Errorf("got GetMaxMonthlyTB(0) %d, want 0", tb)
+	}
+}
+
+func TestEnforce_ThroughputFairUseNonBlocking(t *testing.T) {
+	_, privKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+	pubKey := privKey.Public().(ed25519.PublicKey)
+
+	// Issue token with MaxMonthlyTB = 25
+	token := signTestToken(&Claims{
+		ID:        "lic_throughput_soft_test",
+		Customer:  Customer{Name: "Soft Enforcement Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierPro,
+		IssuedAt:  time.Now().UTC().Add(-1 * time.Hour),
+		ExpiresAt: time.Now().UTC().Add(365 * 24 * time.Hour),
+		Limits: &Limits{
+			MaxMonthlyTB: 25,
+		},
+		Scope: &Scope{
+			Accounts:     []string{"123456789012"},
+			MaxResources: 10,
+		},
+	}, privKey)
+
+	t.Run("WithinThroughputLimit", func(t *testing.T) {
+		quotaTracker := NewQuotaTracker()
+		quotaTracker.RecordBytes(1024 * 1024) // 1 MB
+
+		status, err := Enforce(EnforcementOptions{
+			Environment:     "production",
+			LicenseKey:      token,
+			PublicKey:       pubKey,
+			CallerAccountID: "123456789012",
+			QuotaTracker:    quotaTracker,
+			EnforcementMode: "strict",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error within throughput limit: %v", err)
+		}
+		if !status.Valid {
+			t.Fatal("expected status.Valid to be true")
+		}
+		if status.ThroughputExceeded {
+			t.Fatal("expected status.ThroughputExceeded to be false")
+		}
+	})
+
+	t.Run("ThroughputExceeded_Strict_NeverBlocks", func(t *testing.T) {
+		quotaTracker := NewQuotaTracker()
+		quotaTracker.SetThroughputExceeded(true) // flag throughput overage
+
+		// Crucial acceptance criterion: Even in strict mode, throughput fair-use breach
+		// NEVER returns an error, NEVER halts execution, and NEVER drops log records.
+		status, err := Enforce(EnforcementOptions{
+			Environment:     "production",
+			LicenseKey:      token,
+			PublicKey:       pubKey,
+			CallerAccountID: "123456789012",
+			QuotaTracker:    quotaTracker,
+			EnforcementMode: "strict",
+		})
+		if err != nil {
+			t.Fatalf("throughput overage must NEVER return an error, got: %v", err)
+		}
+		if !status.Valid {
+			t.Fatal("expected status.Valid to be true on throughput overage")
+		}
+		if !status.ThroughputExceeded {
+			t.Fatal("expected status.ThroughputExceeded to be true")
+		}
+	})
+
+	t.Run("ThroughputExceeded_ViaEnvVar", func(t *testing.T) {
+		t.Setenv("DIVMORA_THROUGHPUT_EXCEEDED", "true")
+		quotaTracker := NewQuotaTracker()
+
+		status, err := Enforce(EnforcementOptions{
+			Environment:     "production",
+			LicenseKey:      token,
+			PublicKey:       pubKey,
+			CallerAccountID: "123456789012",
+			QuotaTracker:    quotaTracker,
+			EnforcementMode: "strict",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !status.Valid {
+			t.Fatal("expected status.Valid to be true")
+		}
+		if !status.ThroughputExceeded {
+			t.Fatal("expected status.ThroughputExceeded to be true via env var")
+		}
+	})
+}
+
+func TestEmitCloudWatchEMF_WithBytesProcessed(t *testing.T) {
+	status := &ValidationStatus{
+		Valid:        true,
+		StatusReason: "valid",
+		Claims: &Claims{
+			ID:   "lic_emf_bytes_test",
+			Plan: TierEnterprise,
+		},
+		ThroughputExceeded: true,
+	}
+
+	resourceARN := "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/prod-alb/123456"
+	recordsProcessed := 1500
+	activeResources := 12
+	bytesProcessed := int64(10485760) // 10 MB
+
+	payload := BuildEMFPayload(status, "production", recordsProcessed, activeResources, bytesProcessed, []string{resourceARN})
+	if payload == nil {
+		t.Fatal("expected payload not to be nil")
+	}
+
+	// Verify top-level fields
+	if payload["Environment"] != "production" {
+		t.Errorf("got Environment %v, want production", payload["Environment"])
+	}
+	if payload["Status"] != "valid" {
+		t.Errorf("got Status %v, want valid", payload["Status"])
+	}
+	if payload["RecordsProcessed"] != recordsProcessed {
+		t.Errorf("got RecordsProcessed %v, want %d", payload["RecordsProcessed"], recordsProcessed)
+	}
+	if payload["BytesProcessed"] != bytesProcessed {
+		t.Errorf("got BytesProcessed %v, want %d", payload["BytesProcessed"], bytesProcessed)
+	}
+	if payload["ActiveMonitoredResources"] != activeResources {
+		t.Errorf("got ActiveMonitoredResources %v, want %d", payload["ActiveMonitoredResources"], activeResources)
+	}
+	if payload["LicenseID"] != "lic_emf_bytes_test" {
+		t.Errorf("got LicenseID %v, want lic_emf_bytes_test", payload["LicenseID"])
+	}
+	if payload["Tier"] != TierEnterprise {
+		t.Errorf("got Tier %v, want %s", payload["Tier"], TierEnterprise)
+	}
+	if payload["ResourceARN"] != resourceARN {
+		t.Errorf("got ResourceARN %v, want %s", payload["ResourceARN"], resourceARN)
+	}
+	if payload["ThroughputExceeded"] != true {
+		t.Errorf("got ThroughputExceeded %v, want true", payload["ThroughputExceeded"])
+	}
+
+	// Verify CloudWatchMetrics metadata
+	awsMeta, ok := payload["_aws"].(map[string]any)
+	if !ok {
+		t.Fatal("missing _aws in EMF payload")
+	}
+	cwMetrics, ok := awsMeta["CloudWatchMetrics"].([]map[string]any)
+	if !ok || len(cwMetrics) < 2 {
+		t.Fatalf("expected at least 2 metric namespaces, got %d", len(cwMetrics))
+	}
+
+	// 1. Namespace Divmora/LogProcessor
+	logProcNS := cwMetrics[0]
+	if logProcNS["Namespace"] != "Divmora/LogProcessor" {
+		t.Errorf("got namespace %v, want Divmora/LogProcessor", logProcNS["Namespace"])
+	}
+	metrics := logProcNS["Metrics"].([]map[string]string)
+	hasBytesMetric := false
+	for _, m := range metrics {
+		if m["Name"] == "BytesProcessed" && m["Unit"] == "Bytes" {
+			hasBytesMetric = true
+			break
+		}
+	}
+	if !hasBytesMetric {
+		t.Error("missing BytesProcessed metric in Divmora/LogProcessor namespace")
+	}
+
+	// 2. Namespace Divmora/License
+	licenseNS := cwMetrics[1]
+	if licenseNS["Namespace"] != "Divmora/License" {
+		t.Errorf("got namespace %v, want Divmora/License", licenseNS["Namespace"])
+	}
+
+	// Verify FormatEMFPayload produces valid JSON
+	jsonStr, err := FormatEMFPayload(status, "production", recordsProcessed, activeResources, bytesProcessed, []string{resourceARN})
+	if err != nil {
+		t.Fatalf("FormatEMFPayload failed: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
+		t.Fatalf("invalid JSON output from FormatEMFPayload: %v", err)
+	}
+}

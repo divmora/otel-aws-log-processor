@@ -54,11 +54,12 @@ flowchart LR
 
 ### Plan Summary
 
-| Plan | Target Audience | Monitored Resource Capacity | AWS Account Scope | Indicative Commercial Pricing | Key Architectural Focus |
-|---|---|:---:|:---:|:---:|---|
-| **Community Tier (Free BSL)** | Developers, DevOps, QA, CI/CD | Up to 5 Resources | 1 Account (Non-Prod) | **$0** (Free Forever) | Frictionless evaluation, staging validation, and local development |
-| **Pro Plan (Resource Pack)** | Growth Startups, Engineering Teams | Up to 25 Resources | Up to 3 Accounts | **$50 / res / mo** ($1,250/mo pack) | Production ALB, NLB, CloudFront Gzip, and WAF log streaming to OTLP |
-| **Enterprise Plan** | Scale-Ups, Enterprises, SecOps | 50+ Resources (Flexible Packs) | 10+ Accounts / AWS Org | Starts at **$18,000 / yr** base | High-throughput Parquet, cross-account aggregation, gRPC, mTLS, GeoIP |
+| Plan | Target Audience | Monitored Resource Capacity | Included Monthly Throughput | AWS Account Scope | Indicative Commercial Pricing | Key Architectural Focus |
+|---|---|:---:|:---:|:---:|:---:|---|
+| **Community Tier (Free BSL)** | Developers, DevOps, QA, CI/CD | Up to 5 Resources | 50 GB / month | 1 Account (Non-Prod) | **$0** (Free Forever) | Frictionless evaluation, staging validation, and local development |
+| **Pro Plan (Resource Pack)** | Growth Startups, Engineering Teams | Up to 25 Resources | Up to **10 TB / month** | Up to 3 Accounts | **$50 / res / mo** ($1,250/mo pack) | Production ALB, NLB, CloudFront Gzip, and WAF log streaming to OTLP (~$0.04/GB) |
+| **Enterprise Plan** | Scale-Ups, Enterprises, SecOps | 50+ Resources (Flexible Packs) | Up to **50 TB / month** base | 10+ Accounts / AWS Org | Starts at **$18,000 / yr** base | High-throughput Parquet, cross-account aggregation, gRPC, mTLS, GeoIP (~$0.02/GB) |
+| **Hyper-Scale Petabyte** | Media, AdTech, Gaming Streaming | Custom Resource Fleets | 250 TB+ to Petabytes | Enterprise AWS Org Fleet | **Custom ELA** | Committed capacity, true-up billing, sub-cent ingestion (~$0.008–$0.015/GB) |
 
 ---
 
@@ -180,34 +181,94 @@ The processor runtime utilizes a thread-safe `ResourceTracker` (`sync.RWMutex`) 
    - **`DIVMORA_LICENSE_MODE=warn` (Default)**: If active monitored resources exceed `MaxResources`, or a resource is not listed in `AllowedResources`, the invocation logs a structured warning and stamps `divmora.license.status=resource_quota_exceeded` or `resource_not_allowed` on exported telemetry without interrupting the data stream.
    - **`DIVMORA_LICENSE_MODE=strict`**: Quota breaches return deterministic errors (`ErrResourceQuotaExceeded` or `ErrResourceNotAllowed`). Combined with `DIVMORA_LICENSE_FAILURE_ACTION=discard`, the Lambda acknowledges the message to cleanly halt cost-inflating SQS redrive loops while recording violation telemetry.
 5. **CloudWatch EMF Metric Schema**:
-   The runtime publishes dimensioned metrics under the `Divmora/LogProcessor` namespace:
+   The runtime publishes dimensioned metrics under the `Divmora/LogProcessor` and `Divmora/License` namespaces with sub-millisecond async emission:
    ```json
    {
      "_aws": {
-       "Timestamp": 1790326624825,
+       "Timestamp": 1790589879443,
        "CloudWatchMetrics": [
          {
            "Namespace": "Divmora/LogProcessor",
            "Dimensions": [["Environment", "Status"], ["Environment"]],
            "Metrics": [
              {"Name": "RecordsProcessed", "Unit": "Count"},
+             {"Name": "BytesProcessed", "Unit": "Bytes"},
              {"Name": "LicenseViolations", "Unit": "Count"},
              {"Name": "ActiveMonitoredResources", "Unit": "Count"}
+           ]
+         },
+         {
+           "Namespace": "Divmora/License",
+           "Dimensions": [["LicenseID", "Tier"], ["LicenseID", "Tier", "ResourceARN"]],
+           "Metrics": [
+             {"Name": "BytesProcessed", "Unit": "Bytes"},
+             {"Name": "RecordsProcessed", "Unit": "Count"}
            ]
          }
        ]
      },
      "Environment": "production",
-     "Status": "active",
+     "Status": "valid",
      "RecordsProcessed": 1500,
+     "BytesProcessed": 10485760,
      "LicenseViolations": 0,
-     "ActiveMonitoredResources": 18
+     "ActiveMonitoredResources": 18,
+     "LicenseID": "lic_9901abcdef",
+     "Tier": "pro",
+     "ResourceARN": "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/api/50dc6c495c0c9188"
    }
    ```
 
 ---
 
-## 6. Commercial License Activation & Configuration
+## 6. Commercial Packaging & Fair-Use Bandwidth Ceilings
+
+### 6.1 The Hyper-Scale Petabyte Under-Monetization Loophole
+AWS CloudWatch Logs charges **$0.50 per Gigabyte ($500 per Terabyte)** for ingestion:
+1. **The Extreme Scale Disconnect**: For an enterprise media, ad-tech, or gaming customer processing **500 TB/month** across just 2 or 3 CloudFront distributions, native CloudWatch ingestion would cost **$250,000/month ($3,000,000/year)**. If `otel-aws-log-processor` only charged flat fees per resource (e.g. 2 CloudFront distributions = $1,200–$4,800/yr), Divmora would capture less than 0.1% of the value created while assuming enterprise support liability for petabyte pipelines.
+2. **Preserving Budget Predictability**: Customers avoid CloudWatch and Datadog because variable metering causes sudden bill shock. Divmora does **not** enforce unpredictable per-GB micro-metering. Instead, we provide **Generous Fixed Tier Caps with Soft Fair-Use True-Up Volume Packs** (similar to Datadog Commitments or Grafana Cloud volume packs).
+3. **Pipeline Safety Invariant**: Under no circumstances should high-volume production logs ever be dropped or blocked due to throughput limits. Enforcement is **strictly soft and non-blocking**, emitting structured telemetry for contractual true-ups.
+
+### 6.2 Commercial Packaging & Fair-Use Bands
+
+| Tier | Included Monthly Throughput | Overage / Expansion Pricing | Effective Ingestion Rate |
+|---|:---:|---|:---:|
+| **Community (BSL 1.1)** | 50 GB / month | Non-production fair-use cap | $0 (Free) |
+| **Team / Pro** | Up to **10 TB / month** included | Upgrade to Enterprise | ~$0.04 / GB (vs CloudWatch $0.50/GB) |
+| **Enterprise Base** | Up to **50 TB / month** included | **+$500/mo per 25 TB** volume pack | ~$0.02 / GB (>96% savings over CloudWatch) |
+| **Hyper-Scale Petabyte** | 250 TB+ to Petabytes | Custom ELA (Committed capacity) | ~$0.008–$0.015 / GB |
+
+### 6.3 Claims Schema: `claims.Limits.MaxMonthlyTB`
+Throughput allocations are cryptographically encoded in the signed license token claims under `limits`:
+
+```json
+{
+  "id": "lic_9901abcdef",
+  "plan": "pro",
+  "limits": {
+    "max_monthly_tb": 10,
+    "max_container_records": 50000
+  },
+  "scope": {
+    "max_resources": 25
+  }
+}
+```
+
+- **`claims.Limits.MaxMonthlyTB` (`max_monthly_tb`)**: Specifies the fair-use monthly throughput ceiling in Terabytes. A value of `0` or omitted indicates an uncapped or unlimited allocation (preserving 100% backward compatibility for existing commercial licenses).
+
+### 6.4 Non-Blocking Soft Enforcement & Rate-Limited Warning Banner
+When cumulative volume breaches the fair-use quota:
+- **Never Drop or Block Batches**: Log processing continues at 100% full line rate. Zero log records are dropped, delayed, or dead-lettered.
+- **Structured Warning Banner**: The runtime emits a rate-limited CloudWatch log warning (at most once every 60 minutes per Lambda container):
+  ```
+  [WARN_FAIR_USE_THROUGHPUT_EXCEEDED] Monthly log volume has exceeded the licensed fair-use allocation (Allocated: 25 TB). Telemetry processing continues uninterrupted without data loss. Please contact licensing@divmora.com to adjust your commitment tier.
+  ```
+- **CloudWatch EMF Metric**: The runtime emits custom metric `BytesProcessed` under namespaces `Divmora/LogProcessor` (Unit: Bytes) and `Divmora/License` with dimensions `[LicenseID, Tier, ResourceARN]` to enable automated billing audit synchronization and true-up invoicing.
+
+---
+
+## 7. Commercial License Activation & Configuration
 
 Commercial licenses are cryptographically signed Ed25519 tokens (format `DIV1.<payload>.<sig>`). Configure tokens via any of the following methods:
 
@@ -242,7 +303,7 @@ export DIVMORA_LICENSE_MODE="strict" # or "warn"
 
 ---
 
-## 7. Verifying License & Plan Status
+## 8. Verifying License & Plan Status
 
 ### Using `license-cli`
 
@@ -261,7 +322,7 @@ license-cli verify -license /path/to/license.key -product otel-aws-log-processor
 
 ---
 
-## 8. Commercial Inquiries & Subscriptions
+## 9. Commercial Inquiries & Subscriptions
 
 To acquire a commercial **Pro** or **Enterprise** subscription, add custom feature flags, or request offline air-gapped node licenses:
 

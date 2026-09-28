@@ -55,39 +55,45 @@ func init() {
 	// Initialize OTLP Client
 	otlpClient = sender.NewOTLPClient(otlpEndpoint, basicAuthUser, basicAuthPass, maxRetries, maxBatchSize, maxConcurrent, logger)
 
-	// Initialize Registry
-	registry = processor.NewRegistry()
-	registry.Register(&processor.ALBProcessor{
-		MaxBatchSize:  maxBatchSize,
-		MaxConcurrent: maxConcurrent,
-		Parser:        &parser.ALBParser{},
-	})
-	registry.Register(&processor.NLBProcessor{
-		MaxBatchSize:  maxBatchSize,
-		MaxConcurrent: maxConcurrent,
-		Parser:        &parser.NLBParser{},
-	})
-	registry.Register(&processor.CloudFrontProcessor{
-		MaxBatchSize:  maxBatchSize,
-		MaxConcurrent: maxConcurrent,
-		Parser:        &parser.CloudFrontParser{},
-	})
-	registry.Register(&processor.WAFProcessor{
-		MaxBatchSize:  maxBatchSize,
-		MaxConcurrent: maxConcurrent,
-		Parser:        &parser.WAFParser{},
-	})
-
-	// Initialize Non-Production Quota Tracker
+	// Initialize Non-Production Quota Tracker & Metering Engine
 	quotaTracker = license.NewQuotaTracker()
 
 	// Initialize Container Resource Tracker
 	resourceTracker = license.NewResourceTracker()
 
+	// Initialize Registry
+	registry = processor.NewRegistry()
+	registry.SetByteTracker(quotaTracker)
+	registry.Register(&processor.ALBProcessor{
+		MaxBatchSize:  maxBatchSize,
+		MaxConcurrent: maxConcurrent,
+		Parser:        &parser.ALBParser{},
+		ByteTracker:   quotaTracker,
+	})
+	registry.Register(&processor.NLBProcessor{
+		MaxBatchSize:  maxBatchSize,
+		MaxConcurrent: maxConcurrent,
+		Parser:        &parser.NLBParser{},
+		ByteTracker:   quotaTracker,
+	})
+	registry.Register(&processor.CloudFrontProcessor{
+		MaxBatchSize:  maxBatchSize,
+		MaxConcurrent: maxConcurrent,
+		Parser:        &parser.CloudFrontParser{},
+		ByteTracker:   quotaTracker,
+	})
+	registry.Register(&processor.WAFProcessor{
+		MaxBatchSize:  maxBatchSize,
+		MaxConcurrent: maxConcurrent,
+		Parser:        &parser.WAFParser{},
+		ByteTracker:   quotaTracker,
+	})
+
 	// Initial license compliance check
 	env := license.DetectEnvironment()
 	initStatus, _ := license.Enforce(license.EnforcementOptions{
-		Environment: env,
+		Environment:  env,
+		QuotaTracker: quotaTracker,
 	})
 	if initStatus != nil {
 		logger.Info("License engine initialized", "status", initStatus.StatusReason, "environment", env, "message", initStatus.Message)
@@ -133,7 +139,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 			"caller_account", callerAccount,
 			"action", failureAction,
 		)
-		license.EmitCloudWatchEMF(preflightStatus, env, 0, resourceTracker.Count())
+		license.EmitCloudWatchEMF(preflightStatus, env, 0, resourceTracker.Count(), quotaTracker.TotalBytesProcessed())
 
 		if failureAction == "dlq" {
 			for _, rec := range sqsEvent.Records {
@@ -327,7 +333,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 				"caller_account", callerAccount,
 				"action", failureAction,
 			)
-			license.EmitCloudWatchEMF(licStatus, env, len(allEntries), resourceTracker.Count())
+			license.EmitCloudWatchEMF(licStatus, env, len(allEntries), resourceTracker.Count(), quotaTracker.TotalBytesProcessed(), sourceResources)
 
 			if failureAction == "dlq" {
 				for _, rec := range sqsEvent.Records {
@@ -357,7 +363,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 	}
 
 	// Emit CloudWatch EMF Metric (asynchronous stdout)
-	license.EmitCloudWatchEMF(licStatus, env, len(allEntries), resourceTracker.Count())
+	license.EmitCloudWatchEMF(licStatus, env, len(allEntries), resourceTracker.Count(), quotaTracker.TotalBytesProcessed(), sourceResources)
 
 	logger.Info("Lambda execution completed", "failures", len(response.BatchItemFailures))
 	return response, nil

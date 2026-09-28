@@ -18,9 +18,20 @@ type LogProcessor interface {
 	Process(ctx context.Context, logger *slog.Logger, s3Client *s3.Client, bucket, key string) ([]LogAdapter, error)
 }
 
+// ByteTracker defines an interface for atomically recording bytes processed during streaming decompression.
+type ByteTracker interface {
+	RecordBytes(n int64) int64
+}
+
+// ByteTrackable represents a processor that can be configured with a ByteTracker.
+type ByteTrackable interface {
+	SetByteTracker(bt ByteTracker)
+}
+
 // Registry manages the available processors
 type Registry struct {
-	processors []LogProcessor
+	processors  []LogProcessor
+	byteTracker ByteTracker
 }
 
 // NewRegistry creates a new processor registry
@@ -30,8 +41,23 @@ func NewRegistry() *Registry {
 	}
 }
 
+// SetByteTracker configures a ByteTracker on all registered processors that support it.
+func (r *Registry) SetByteTracker(bt ByteTracker) {
+	r.byteTracker = bt
+	for _, p := range r.processors {
+		if trackable, ok := p.(ByteTrackable); ok {
+			trackable.SetByteTracker(bt)
+		}
+	}
+}
+
 // Register adds a processor to the registry
 func (r *Registry) Register(p LogProcessor) {
+	if r.byteTracker != nil {
+		if trackable, ok := p.(ByteTrackable); ok {
+			trackable.SetByteTracker(r.byteTracker)
+		}
+	}
 	r.processors = append(r.processors, p)
 }
 

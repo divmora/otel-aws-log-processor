@@ -17,6 +17,11 @@ type WAFProcessor struct {
 	MaxBatchSize  int
 	MaxConcurrent int
 	Parser        parser.LogParser[parser.WAFLogEntry]
+	ByteTracker   ByteTracker
+}
+
+func (p *WAFProcessor) SetByteTracker(bt ByteTracker) {
+	p.ByteTracker = bt
 }
 
 func (p *WAFProcessor) Name() string {
@@ -42,7 +47,7 @@ func (p *WAFProcessor) Process(ctx context.Context, logger *slog.Logger, s3Clien
 			AccountID:   accountID,
 			Region:      region,
 		}, nil
-	})
+	}, p.ByteTracker)
 }
 
 // WAFAdapter implementation

@@ -91,6 +91,10 @@ License tokens are signed with Ed25519 and contain claims embedded in `claims.Sc
   "product": "otel-aws-log-processor",
   "customer": "Example Corp",
   "features": ["parser.alb", "parser.nlb", "parser.cloudfront.gzip", "parser.waf", "metrics.emf"],
+  "limits": {
+    "max_monthly_tb": 10,
+    "max_container_records": 50000
+  },
   "scope": {
     "accounts": ["123456789012", "234567890123", "345678901234"],
     "max_accounts": 3,
@@ -105,8 +109,10 @@ License tokens are signed with Ed25519 and contain claims embedded in `claims.Sc
 ```
 
 #### Fields Reference:
+- **`claims.Limits.MaxMonthlyTB` (`int`)**: Specifies the fair-use monthly throughput ceiling in Terabytes.
+  - **Backward Compatibility**: If `max_monthly_tb == 0` or omitted, monthly throughput is **uncapped**.
 - **`claims.Scope.MaxResources` (`int`)**: Maximum unique active monitored resources allowed across the container's lifecycle.
-  - **Backward Compatibility**: If `max_resources == 0` or is omitted (such as in legacy commercial licenses), resource tracking is **uncapped**, ensuring zero disruption to existing licenses.
+  - **Backward Compatibility**: If `max_resources == 0` or omitted (such as in legacy commercial licenses), resource tracking is **uncapped**, ensuring zero disruption to existing licenses.
 - **`claims.Scope.AllowedResources` (`[]string`)**: Optional explicit list of permitted resource ARNs, prefixes, wildcards, or IDs.
   - Supports glob wildcards (`*` and `?`) spanning path boundaries.
   - Supports short ID matching against ARN suffixes.
@@ -125,31 +131,56 @@ The container maintains a thread-safe `ResourceTracker` protected by `sync.RWMut
   - Processing an unauthorized resource returns `ErrResourceNotAllowed`.
   - With `DIVMORA_LICENSE_FAILURE_ACTION=discard`, SQS messages are cleanly acknowledged to prevent infinite retry loops.
 
-### 3.5 CloudWatch EMF Metrics Schema
+### 3.5 High-Performance Byte Metering & Soft Fair-Use Ceiling
 
-Every batch execution emits metrics in CloudWatch Embedded Metric Format (EMF) under namespace `Divmora/LogProcessor`:
+To resolve the **Hyper-Scale Petabyte Under-Monetization Loophole** (where multi-hundred-terabyte pipelines eliminate $250,000+/mo in CloudWatch ingestion while paying only small flat fees), `otel-aws-log-processor` implements high-performance atomic byte tracking:
+
+1. **Zero-Allocation Stream Metering**: `CountingReader` hooks directly into the decompression readers (`io.Reader` scanners, JSON streaming decoders, and Parquet readers). Bytes are recorded via lock-free atomic counters (`atomic.Int64`), adding `<0.5%` CPU overhead with zero memory allocations on the critical path.
+2. **100% Non-Blocking Soft Invariant**: When cumulative throughput breaches the fair-use tier allocation (`max_monthly_tb`), **no log records are ever dropped, delayed, or dead-lettered**. Log processing continues uninterrupted at 100% full line rate.
+3. **Rate-Limited Structured Warning Banner**: A warning banner is emitted to CloudWatch Logs at most once every 60 minutes per Lambda container:
+   ```
+   [WARN_FAIR_USE_THROUGHPUT_EXCEEDED] Monthly log volume has exceeded the licensed fair-use allocation (Allocated: 25 TB). Telemetry processing continues uninterrupted without data loss. Please contact licensing@divmora.com to adjust your commitment tier.
+   ```
+4. **CloudWatch EMF Metric Synchronization**: Exact byte counts are emitted via AWS CloudWatch Embedded Metric Format (EMF) for automated billing audit synchronization and contractual true-up invoicing.
+
+### 3.6 CloudWatch EMF Metrics Schema
+
+Every batch execution emits metrics in CloudWatch Embedded Metric Format (EMF) under namespaces `Divmora/LogProcessor` and `Divmora/License`:
 
 ```json
 {
   "_aws": {
-    "Timestamp": 1790326624825,
+    "Timestamp": 1790589879443,
     "CloudWatchMetrics": [
       {
         "Namespace": "Divmora/LogProcessor",
         "Dimensions": [["Environment", "Status"], ["Environment"]],
         "Metrics": [
           {"Name": "RecordsProcessed", "Unit": "Count"},
+          {"Name": "BytesProcessed", "Unit": "Bytes"},
           {"Name": "LicenseViolations", "Unit": "Count"},
           {"Name": "ActiveMonitoredResources", "Unit": "Count"}
+        ]
+      },
+      {
+        "Namespace": "Divmora/License",
+        "Dimensions": [["LicenseID", "Tier"], ["LicenseID", "Tier", "ResourceARN"]],
+        "Metrics": [
+          {"Name": "BytesProcessed", "Unit": "Bytes"},
+          {"Name": "RecordsProcessed", "Unit": "Count"}
         ]
       }
     ]
   },
   "Environment": "production",
-  "Status": "active",
+  "Status": "valid",
   "RecordsProcessed": 1500,
+  "BytesProcessed": 10485760,
   "LicenseViolations": 0,
-  "ActiveMonitoredResources": 18
+  "ActiveMonitoredResources": 18,
+  "LicenseID": "lic_9901abcdef",
+  "Tier": "pro",
+  "ResourceARN": "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/api/50dc6c495c0c9188"
 }
 ```
 

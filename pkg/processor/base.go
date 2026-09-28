@@ -23,8 +23,35 @@ type ProcessLineFunc func(line string) (LogAdapter, error)
 // ProcessJSONFunc is a function that processes a single raw JSON object
 type ProcessJSONFunc func(data []byte) (LogAdapter, error)
 
+// CountingReader wraps an io.Reader and reports the count of bytes read to a ByteTracker
+// with zero memory allocations on the critical path.
+type CountingReader struct {
+	reader  io.Reader
+	tracker ByteTracker
+}
+
+// NewCountingReader wraps reader with tracker. If tracker is nil, it returns the original reader unchanged.
+func NewCountingReader(reader io.Reader, tracker ByteTracker) io.Reader {
+	if tracker == nil || reader == nil {
+		return reader
+	}
+	return &CountingReader{
+		reader:  reader,
+		tracker: tracker,
+	}
+}
+
+// Read reads from the underlying reader and atomically reports bytes read to the ByteTracker.
+func (cr *CountingReader) Read(p []byte) (int, error) {
+	n, err := cr.reader.Read(p)
+	if n > 0 && cr.tracker != nil {
+		cr.tracker.RecordBytes(int64(n))
+	}
+	return n, err
+}
+
 // ReadAndParseFromS3 is a helper to stream and parse line-based logs
-func ReadAndParseFromS3(ctx context.Context, logger *slog.Logger, s3Client *s3.Client, bucket, key string, maxBatchSize, maxConcurrent int, parseFunc ProcessLineFunc) ([]LogAdapter, error) {
+func ReadAndParseFromS3(ctx context.Context, logger *slog.Logger, s3Client *s3.Client, bucket, key string, maxBatchSize, maxConcurrent int, parseFunc ProcessLineFunc, tracker ...ByteTracker) ([]LogAdapter, error) {
 	// Get object from S3
 	result, err := s3Client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
@@ -45,6 +72,14 @@ func ReadAndParseFromS3(ctx context.Context, logger *slog.Logger, s3Client *s3.C
 		}
 		defer gzReader.Close()
 		reader = gzReader
+	}
+
+	var byteTracker ByteTracker
+	if len(tracker) > 0 {
+		byteTracker = tracker[0]
+	}
+	if byteTracker != nil {
+		reader = NewCountingReader(reader, byteTracker)
 	}
 
 	// Create channels for parallel processing
@@ -109,7 +144,7 @@ func ReadAndParseFromS3(ctx context.Context, logger *slog.Logger, s3Client *s3.C
 }
 
 // ReadAndParseJSONFromS3 is a helper to stream and parse JSON logs (concatenated or new-line delimited)
-func ReadAndParseJSONFromS3(ctx context.Context, logger *slog.Logger, s3Client *s3.Client, bucket, key string, maxBatchSize, maxConcurrent int, parseFunc ProcessJSONFunc) ([]LogAdapter, error) {
+func ReadAndParseJSONFromS3(ctx context.Context, logger *slog.Logger, s3Client *s3.Client, bucket, key string, maxBatchSize, maxConcurrent int, parseFunc ProcessJSONFunc, tracker ...ByteTracker) ([]LogAdapter, error) {
 	// Get object from S3
 	result, err := s3Client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
@@ -130,6 +165,14 @@ func ReadAndParseJSONFromS3(ctx context.Context, logger *slog.Logger, s3Client *
 		}
 		defer gzReader.Close()
 		reader = gzReader
+	}
+
+	var byteTracker ByteTracker
+	if len(tracker) > 0 {
+		byteTracker = tracker[0]
+	}
+	if byteTracker != nil {
+		reader = NewCountingReader(reader, byteTracker)
 	}
 
 	// Create channels for parallel processing
@@ -198,7 +241,7 @@ func ReadAndParseJSONFromS3(ctx context.Context, logger *slog.Logger, s3Client *
 }
 
 // ReadAndParseParquetFromS3 streams and parses parquet logs
-func ReadAndParseParquetFromS3[T any](ctx context.Context, logger *slog.Logger, s3Client *s3.Client, bucket, key string, maxBatchSize, maxConcurrent int, parseFunc func(*T) (LogAdapter, error)) ([]LogAdapter, error) {
+func ReadAndParseParquetFromS3[T any](ctx context.Context, logger *slog.Logger, s3Client *s3.Client, bucket, key string, maxBatchSize, maxConcurrent int, parseFunc func(*T) (LogAdapter, error), tracker ...ByteTracker) ([]LogAdapter, error) {
 	// Get object from S3
 	result, err := s3Client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
@@ -213,6 +256,14 @@ func ReadAndParseParquetFromS3[T any](ctx context.Context, logger *slog.Logger, 
 	data, err := io.ReadAll(result.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read S3 object body: %w", err)
+	}
+
+	var byteTracker ByteTracker
+	if len(tracker) > 0 {
+		byteTracker = tracker[0]
+	}
+	if byteTracker != nil {
+		byteTracker.RecordBytes(int64(len(data)))
 	}
 
 	reader := bytes.NewReader(data)
