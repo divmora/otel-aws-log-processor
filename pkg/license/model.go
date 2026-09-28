@@ -154,8 +154,8 @@ type Limits struct {
 	// MaxAccounts specifies maximum allowed AWS spoke accounts (0 = unlimited).
 	MaxAccounts int `json:"max_accounts,omitempty"`
 
-	// MaxMonthlyTB specifies the fair-use monthly throughput ceiling in Terabytes (0 = uncapped).
-	MaxMonthlyTB int `json:"max_monthly_tb,omitempty"`
+	// MaxMonthlyGB specifies the fair-use monthly throughput ceiling in Gigabytes (0 = uncapped).
+	MaxMonthlyGB int `json:"max_monthly_gb,omitempty"`
 
 	// MaxContainerRecords specifies in-container record limits for non-prod evaluation.
 	MaxContainerRecords int64 `json:"max_container_records,omitempty"`
@@ -188,9 +188,9 @@ func (l *Limits) UnmarshalJSON(data []byte) error {
 				l.MaxAccounts = int(v)
 			}
 		}
-		if l.MaxMonthlyTB == 0 {
-			if v, ok := raw["max_monthly_tb"]; ok {
-				l.MaxMonthlyTB = int(v)
+		if l.MaxMonthlyGB == 0 {
+			if v, ok := raw["max_monthly_gb"]; ok {
+				l.MaxMonthlyGB = int(v)
 			}
 		}
 		if l.MaxContainerRecords == 0 {
@@ -214,8 +214,8 @@ func (l *Limits) MarshalJSON() ([]byte, error) {
 	if l.MaxAccounts > 0 {
 		out["max_accounts"] = l.MaxAccounts
 	}
-	if l.MaxMonthlyTB > 0 {
-		out["max_monthly_tb"] = l.MaxMonthlyTB
+	if l.MaxMonthlyGB > 0 {
+		out["max_monthly_gb"] = l.MaxMonthlyGB
 	}
 	if l.MaxContainerRecords > 0 {
 		out["max_container_records"] = l.MaxContainerRecords
@@ -635,13 +635,19 @@ func IsResourceAllowed(c *Claims, resourceARN string) bool {
 	return c.Scope.IsResourceAllowed(resourceARN)
 }
 
-// GetMaxMonthlyTB returns the fair-use monthly throughput ceiling in Terabytes from Claims.Limits.MaxMonthlyTB.
+// GetMaxMonthlyGB returns the fair-use monthly throughput ceiling in Gigabytes from Claims.Limits.MaxMonthlyGB.
 // Returns 0 if uncapped or unlimited.
-func GetMaxMonthlyTB(c *Claims) int {
-	if c == nil || c.Limits == nil || c.Limits.MaxMonthlyTB <= 0 {
+func GetMaxMonthlyGB(c *Claims) int {
+	if c == nil || c.Limits == nil {
 		return 0
 	}
-	return c.Limits.MaxMonthlyTB
+	if c.Limits.MaxMonthlyGB > 0 {
+		return c.Limits.MaxMonthlyGB
+	}
+	if v, ok := c.Limits.Raw["max_monthly_gb"]; ok && v > 0 {
+		return int(v)
+	}
+	return 0
 }
 
 // ResolveCentralMetricsRegion extracts the authoritative centralized CloudWatch metrics region

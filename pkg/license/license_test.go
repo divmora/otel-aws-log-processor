@@ -1910,16 +1910,16 @@ func TestQuotaTracker_FairUseWarningRateLimiting(t *testing.T) {
 	}
 }
 
-func TestClaims_LimitsAndMaxMonthlyTB(t *testing.T) {
-	// 1. Claims with explicit MaxMonthlyTB and MaxContainerRecords
+func TestClaims_LimitsAndMaxMonthlyGB(t *testing.T) {
+	// 1. Claims with explicit MaxMonthlyGB and MaxContainerRecords
 	jsonClaims := `{
-		"id": "lic_tb_test",
+		"id": "lic_gb_test",
 		"customer": {"name": "Throughput Customer"},
 		"product": "otel-aws-log-processor",
 		"plan": "pro",
 		"issued_at": "2026-09-01T00:00:00Z",
 		"limits": {
-			"max_monthly_tb": 25,
+			"max_monthly_gb": 25000,
 			"max_container_records": 50000
 		}
 	}`
@@ -1932,25 +1932,25 @@ func TestClaims_LimitsAndMaxMonthlyTB(t *testing.T) {
 	if claims.Limits == nil {
 		t.Fatal("expected claims.Limits to not be nil")
 	}
-	if claims.Limits.MaxMonthlyTB != 25 {
-		t.Errorf("got MaxMonthlyTB %d, want 25", claims.Limits.MaxMonthlyTB)
+	if claims.Limits.MaxMonthlyGB != 25000 {
+		t.Errorf("got MaxMonthlyGB %d, want 25000", claims.Limits.MaxMonthlyGB)
 	}
 	if claims.Limits.MaxContainerRecords != 50000 {
 		t.Errorf("got MaxContainerRecords %d, want 50000", claims.Limits.MaxContainerRecords)
 	}
-	if tb := GetMaxMonthlyTB(&claims); tb != 25 {
-		t.Errorf("got GetMaxMonthlyTB %d, want 25", tb)
+	if gb := GetMaxMonthlyGB(&claims); gb != 25000 {
+		t.Errorf("got GetMaxMonthlyGB %d, want 25000", gb)
 	}
 
 	// 2. Uncapped / omitted limits
-	if tb := GetMaxMonthlyTB(nil); tb != 0 {
-		t.Errorf("got GetMaxMonthlyTB(nil) %d, want 0", tb)
+	if gb := GetMaxMonthlyGB(nil); gb != 0 {
+		t.Errorf("got GetMaxMonthlyGB(nil) %d, want 0", gb)
 	}
-	if tb := GetMaxMonthlyTB(&Claims{}); tb != 0 {
-		t.Errorf("got GetMaxMonthlyTB(empty) %d, want 0", tb)
+	if gb := GetMaxMonthlyGB(&Claims{}); gb != 0 {
+		t.Errorf("got GetMaxMonthlyGB(empty) %d, want 0", gb)
 	}
-	if tb := GetMaxMonthlyTB(&Claims{Limits: &Limits{MaxMonthlyTB: 0}}); tb != 0 {
-		t.Errorf("got GetMaxMonthlyTB(0) %d, want 0", tb)
+	if gb := GetMaxMonthlyGB(&Claims{Limits: &Limits{MaxMonthlyGB: 0}}); gb != 0 {
+		t.Errorf("got GetMaxMonthlyGB(0) %d, want 0", gb)
 	}
 }
 
@@ -1970,7 +1970,7 @@ func TestEnforce_ThroughputFairUseNonBlocking(t *testing.T) {
 		IssuedAt:  time.Now().UTC().Add(-1 * time.Hour),
 		ExpiresAt: time.Now().UTC().Add(365 * 24 * time.Hour),
 		Limits: &Limits{
-			MaxMonthlyTB: 25,
+			MaxMonthlyGB: 25000,
 			MaxResources: 10,
 		},
 		Scope: &Scope{
@@ -2371,7 +2371,7 @@ func TestLimits_QuotasAndAccessors(t *testing.T) {
 		payload := []byte(`{
 			"max_resources": 50,
 			"max_accounts": 5,
-			"max_monthly_tb": 20,
+			"max_monthly_gb": 20000,
 			"max_container_records": 100000,
 			"custom_limit": 999
 		}`)
@@ -2387,8 +2387,8 @@ func TestLimits_QuotasAndAccessors(t *testing.T) {
 		if l.MaxAccounts != 5 {
 			t.Errorf("expected MaxAccounts=5, got %d", l.MaxAccounts)
 		}
-		if l.MaxMonthlyTB != 20 {
-			t.Errorf("expected MaxMonthlyTB=20, got %d", l.MaxMonthlyTB)
+		if l.MaxMonthlyGB != 20000 {
+			t.Errorf("expected MaxMonthlyGB=20000, got %d", l.MaxMonthlyGB)
 		}
 		if l.MaxContainerRecords != 100000 {
 			t.Errorf("expected MaxContainerRecords=100000, got %d", l.MaxContainerRecords)
@@ -2406,8 +2406,8 @@ func TestLimits_QuotasAndAccessors(t *testing.T) {
 		if ma := GetMaxAccounts(claims); ma != 5 {
 			t.Errorf("expected GetMaxAccounts=5, got %d", ma)
 		}
-		if mtb := GetMaxMonthlyTB(claims); mtb != 20 {
-			t.Errorf("expected GetMaxMonthlyTB=20, got %d", mtb)
+		if mgb := GetMaxMonthlyGB(claims); mgb != 20000 {
+			t.Errorf("expected GetMaxMonthlyGB=20000, got %d", mgb)
 		}
 	})
 
@@ -2418,7 +2418,7 @@ func TestLimits_QuotasAndAccessors(t *testing.T) {
 		if GetMaxAccounts(nil) != 0 {
 			t.Errorf("expected 0 for nil claims")
 		}
-		if GetMaxMonthlyTB(nil) != 0 {
+		if GetMaxMonthlyGB(nil) != 0 {
 			t.Errorf("expected 0 for nil claims")
 		}
 
@@ -2429,7 +2429,7 @@ func TestLimits_QuotasAndAccessors(t *testing.T) {
 		if GetMaxAccounts(emptyClaims) != 0 {
 			t.Errorf("expected 0 for empty claims")
 		}
-		if GetMaxMonthlyTB(emptyClaims) != 0 {
+		if GetMaxMonthlyGB(emptyClaims) != 0 {
 			t.Errorf("expected 0 for empty claims")
 		}
 	})
@@ -2438,7 +2438,7 @@ func TestLimits_QuotasAndAccessors(t *testing.T) {
 		l := Limits{
 			MaxResources:        15,
 			MaxAccounts:         2,
-			MaxMonthlyTB:        5,
+			MaxMonthlyGB:        5000,
 			MaxContainerRecords: 50000,
 			Raw: map[string]int64{
 				"custom_val": 42,
@@ -2461,8 +2461,8 @@ func TestLimits_QuotasAndAccessors(t *testing.T) {
 		if roundTrip.MaxAccounts != 2 {
 			t.Errorf("expected MaxAccounts=2, got %d", roundTrip.MaxAccounts)
 		}
-		if roundTrip.MaxMonthlyTB != 5 {
-			t.Errorf("expected MaxMonthlyTB=5, got %d", roundTrip.MaxMonthlyTB)
+		if roundTrip.MaxMonthlyGB != 5000 {
+			t.Errorf("expected MaxMonthlyGB=5000, got %d", roundTrip.MaxMonthlyGB)
 		}
 		if roundTrip.Raw["custom_val"] != 42 {
 			t.Errorf("expected Raw[custom_val]=42, got %d", roundTrip.Raw["custom_val"])

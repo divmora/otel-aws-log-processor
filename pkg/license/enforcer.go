@@ -620,10 +620,10 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 	}
 
 	// Track and evaluate soft fair-use monthly throughput ceiling
-	maxMonthlyTB := GetMaxMonthlyTB(status.Claims)
-	if maxMonthlyTB > 0 && opts.QuotaTracker != nil {
-		if opts.QuotaTracker.CheckThroughputQuota(maxMonthlyTB) {
-			opts.QuotaTracker.LogFairUseWarningAt(maxMonthlyTB, evalTime)
+	maxMonthlyGB := GetMaxMonthlyGB(status.Claims)
+	if maxMonthlyGB > 0 && opts.QuotaTracker != nil {
+		if opts.QuotaTracker.CheckThroughputQuota(maxMonthlyGB) {
+			opts.QuotaTracker.LogFairUseWarningAt(maxMonthlyGB, evalTime)
 			status.ThroughputExceeded = true
 		}
 	}

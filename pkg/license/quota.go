@@ -19,7 +19,7 @@ const (
 const FairUseWarningInterval = 60 * time.Minute
 
 // FairUseWarningBanner defines the structured warning message emitted when fair-use throughput allocation is breached.
-const FairUseWarningBanner = "[WARN_FAIR_USE_THROUGHPUT_EXCEEDED] Monthly log volume has exceeded the licensed fair-use allocation (Allocated: %d TB). Telemetry processing continues uninterrupted without data loss. Please contact licensing@divmora.com to adjust your commitment tier."
+const FairUseWarningBanner = "[WARN_FAIR_USE_THROUGHPUT_EXCEEDED] Monthly log volume has exceeded the licensed fair-use allocation (Allocated: %d GB). Telemetry processing continues uninterrupted without data loss. Please contact licensing@divmora.com to adjust your commitment tier."
 
 // QuotaTracker maintains in-container execution metrics and evaluates fair-use rate ceilings.
 type QuotaTracker struct {
@@ -86,8 +86,8 @@ func (q *QuotaTracker) IsThroughputExceeded() bool {
 
 // CheckThroughputQuota checks whether the cumulative volume or external signals indicate that
 // the fair-use monthly throughput ceiling has been breached.
-func (q *QuotaTracker) CheckThroughputQuota(maxMonthlyTB int) bool {
-	if q == nil || maxMonthlyTB <= 0 {
+func (q *QuotaTracker) CheckThroughputQuota(maxMonthlyGB int) bool {
+	if q == nil || maxMonthlyGB <= 0 {
 		return false
 	}
 	if q.throughputExceeded.Load() {
@@ -96,20 +96,20 @@ func (q *QuotaTracker) CheckThroughputQuota(maxMonthlyTB int) bool {
 	if os.Getenv("DIVMORA_THROUGHPUT_EXCEEDED") == "true" || os.Getenv("DIVMORA_FAIR_USE_EXCEEDED") == "true" {
 		return true
 	}
-	if usageStr := os.Getenv("DIVMORA_MONTHLY_USAGE_TB"); usageStr != "" {
-		if usageTB, err := strconv.Atoi(usageStr); err == nil && usageTB > maxMonthlyTB {
+	if usageStr := os.Getenv("DIVMORA_MONTHLY_USAGE_GB"); usageStr != "" {
+		if usageGB, err := strconv.Atoi(usageStr); err == nil && usageGB > maxMonthlyGB {
 			return true
 		}
 	}
 	if usageBytesStr := os.Getenv("DIVMORA_MONTHLY_USAGE_BYTES"); usageBytesStr != "" {
-		if usageBytes, err := strconv.ParseInt(usageBytesStr, 10, 64); err == nil && usageBytes > int64(maxMonthlyTB)*1_000_000_000_000 {
+		if usageBytes, err := strconv.ParseInt(usageBytesStr, 10, 64); err == nil && usageBytes > int64(maxMonthlyGB)*1_000_000_000 {
 			return true
 		}
 	}
 	if maxContainerBytes := getEnvInt64("DIVMORA_MAX_CONTAINER_BYTES", 0); maxContainerBytes > 0 && q.TotalBytesProcessed() > maxContainerBytes {
 		return true
 	}
-	if q.TotalBytesProcessed() > int64(maxMonthlyTB)*1_000_000_000_000 {
+	if q.TotalBytesProcessed() > int64(maxMonthlyGB)*1_000_000_000 {
 		return true
 	}
 	return false
@@ -139,13 +139,13 @@ func (q *QuotaTracker) ShouldEmitFairUseWarning() bool {
 
 // LogFairUseWarningAt emits the rate-limited soft fair-use warning banner at reference time now.
 // Returns true if the warning was emitted, or false if it was suppressed by rate limiting.
-func (q *QuotaTracker) LogFairUseWarningAt(allocatedTB int, now time.Time) bool {
+func (q *QuotaTracker) LogFairUseWarningAt(allocatedGB int, now time.Time) bool {
 	if q == nil || !q.ShouldEmitFairUseWarningAt(now) {
 		return false
 	}
-	msg := fmt.Sprintf(FairUseWarningBanner, allocatedTB)
+	msg := fmt.Sprintf(FairUseWarningBanner, allocatedGB)
 	slog.Warn(msg,
-		"allocated_tb", allocatedTB,
+		"allocated_gb", allocatedGB,
 		"total_bytes_processed", q.TotalBytesProcessed(),
 		"contact", "licensing@divmora.com",
 	)
@@ -154,8 +154,8 @@ func (q *QuotaTracker) LogFairUseWarningAt(allocatedTB int, now time.Time) bool 
 
 // LogFairUseWarning emits the rate-limited soft fair-use warning banner at current UTC time.
 // Returns true if the warning was emitted, or false if it was suppressed by rate limiting.
-func (q *QuotaTracker) LogFairUseWarning(allocatedTB int) bool {
-	return q.LogFairUseWarningAt(allocatedTB, time.Now().UTC())
+func (q *QuotaTracker) LogFairUseWarning(allocatedGB int) bool {
+	return q.LogFairUseWarningAt(allocatedGB, time.Now().UTC())
 }
 
 // ResetWarningTime resets the last warning timestamp (primarily for testing).

@@ -92,13 +92,13 @@ License tokens are signed with Ed25519 and contain claims embedded in `claims.Sc
   "customer": "Example Corp",
   "features": ["parser.alb", "parser.nlb", "parser.cloudfront.gzip", "parser.waf", "metrics.emf"],
   "limits": {
-    "max_monthly_tb": 10,
+    "max_resources": 25,
+    "max_accounts": 3,
+    "max_monthly_gb": 10000,
     "max_container_records": 50000
   },
   "scope": {
     "accounts": ["123456789012", "234567890123", "345678901234"],
-    "max_accounts": 3,
-    "max_resources": 25,
     "allowed_resources": [
       "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/*",
       "EDFDVBD632BHFR5"
@@ -109,14 +109,14 @@ License tokens are signed with Ed25519 and contain claims embedded in `claims.Sc
 ```
 
 #### Fields Reference:
-- **`claims.Limits.MaxMonthlyTB` (`int`)**: Specifies the fair-use monthly throughput ceiling in Terabytes.
-  - **Backward Compatibility**: If `max_monthly_tb == 0` or omitted, monthly throughput is **uncapped**.
-- **`claims.Scope.MaxResources` (`int`)**: Maximum unique active monitored resources allowed across the container's lifecycle.
-  - **Backward Compatibility**: If `max_resources == 0` or omitted (such as in legacy commercial licenses), resource tracking is **uncapped**, ensuring zero disruption to existing licenses.
+- **`claims.Limits.MaxMonthlyGB` (`int`)**: Specifies the fair-use monthly throughput ceiling in Gigabytes (e.g. `50` for Community, `10000` for Pro 10 TB, `50000` for Enterprise 50 TB).
+  - **Backward Compatibility**: If `max_monthly_gb == 0` or omitted, monthly throughput is **uncapped**.
+- **`claims.Limits.MaxResources` (`int`)**: Maximum unique active monitored resources allowed across the container's lifecycle.
+  - **Backward Compatibility**: If `max_resources == 0` or omitted, resource tracking is **uncapped**.
+- **`claims.Limits.MaxAccounts` (`int`)**: Maximum unique AWS account IDs permitted.
 - **`claims.Scope.AllowedResources` (`[]string`)**: Optional explicit list of permitted resource ARNs, prefixes, wildcards, or IDs.
   - Supports glob wildcards (`*` and `?`) spanning path boundaries.
   - Supports short ID matching against ARN suffixes.
-- **`claims.Scope.MaxAccounts` (`int`)**: Maximum unique AWS account IDs permitted.
 
 ### 3.4 Runtime Resource Tracking & Enforcement Modes
 
@@ -136,10 +136,10 @@ The container maintains a thread-safe `ResourceTracker` protected by `sync.RWMut
 To resolve the **Hyper-Scale Petabyte Under-Monetization Loophole** (where multi-hundred-terabyte pipelines eliminate $250,000+/mo in CloudWatch ingestion while paying only small flat fees), `otel-aws-log-processor` implements high-performance atomic byte tracking:
 
 1. **Zero-Allocation Stream Metering**: `CountingReader` hooks directly into the decompression readers (`io.Reader` scanners, JSON streaming decoders, and Parquet readers). Bytes are recorded via lock-free atomic counters (`atomic.Int64`), adding `<0.5%` CPU overhead with zero memory allocations on the critical path.
-2. **100% Non-Blocking Soft Invariant**: When cumulative throughput breaches the fair-use tier allocation (`max_monthly_tb`), **no log records are ever dropped, delayed, or dead-lettered**. Log processing continues uninterrupted at 100% full line rate.
+2. **100% Non-Blocking Soft Invariant**: When cumulative throughput breaches the fair-use tier allocation (`max_monthly_gb`), **no log records are ever dropped, delayed, or dead-lettered**. Log processing continues uninterrupted at 100% full line rate.
 3. **Rate-Limited Structured Warning Banner**: A warning banner is emitted to CloudWatch Logs at most once every 60 minutes per Lambda container:
    ```
-   [WARN_FAIR_USE_THROUGHPUT_EXCEEDED] Monthly log volume has exceeded the licensed fair-use allocation (Allocated: 25 TB). Telemetry processing continues uninterrupted without data loss. Please contact licensing@divmora.com to adjust your commitment tier.
+   [WARN_FAIR_USE_THROUGHPUT_EXCEEDED] Monthly log volume has exceeded the licensed fair-use allocation (Allocated: 10000 GB). Telemetry processing continues uninterrupted without data loss. Please contact licensing@divmora.com to adjust your commitment tier.
    ```
 4. **CloudWatch EMF Metric Synchronization**: Exact byte counts are emitted via AWS CloudWatch Embedded Metric Format (EMF) for automated billing audit synchronization and contractual true-up invoicing.
 

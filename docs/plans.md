@@ -238,31 +238,39 @@ AWS CloudWatch Logs charges **$0.50 per Gigabyte ($500 per Terabyte)** for inges
 | **Enterprise Base** | Up to **50 TB / month** included | **+$500/mo per 25 TB** volume pack | ~$0.02 / GB (>96% savings over CloudWatch) |
 | **Hyper-Scale Petabyte** | 250 TB+ to Petabytes | Custom ELA (Committed capacity) | ~$0.008–$0.015 / GB |
 
-### 6.3 Claims Schema: `claims.Limits.MaxMonthlyTB`
-Throughput allocations are cryptographically encoded in the signed license token claims under `limits`:
+### 6.3 Claims Schema: `claims.Limits.MaxMonthlyGB`
+Throughput allocations and resource quotas are cryptographically encoded in the signed license token claims under `limits`:
 
 ```json
 {
   "id": "lic_9901abcdef",
   "plan": "pro",
   "limits": {
-    "max_monthly_tb": 10,
+    "max_resources": 25,
+    "max_accounts": 3,
+    "max_monthly_gb": 10000,
     "max_container_records": 50000
   },
   "scope": {
-    "max_resources": 25
+    "accounts": ["123456789012"],
+    "allowed_resources": [
+      "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/*"
+    ]
   }
 }
 ```
 
-- **`claims.Limits.MaxMonthlyTB` (`max_monthly_tb`)**: Specifies the fair-use monthly throughput ceiling in Terabytes. A value of `0` or omitted indicates an uncapped or unlimited allocation (preserving 100% backward compatibility for existing commercial licenses).
+- **`claims.Limits.MaxMonthlyGB` (`max_monthly_gb`)**: Specifies the fair-use monthly throughput ceiling in Gigabytes (e.g. `50` for Community, `10000` for Pro 10 TB, `50000` for Enterprise 50 TB). A value of `0` or omitted indicates an uncapped or unlimited allocation (preserving 100% backward compatibility for existing commercial licenses).
+- **`claims.Limits.MaxResources` (`max_resources`)**: Maximum cumulative unique monitored resources authorized for log ingestion.
+- **`claims.Limits.MaxAccounts` (`max_accounts`)**: Maximum allowed spoke AWS accounts.
+- **`claims.Scope.AllowedResources` (`allowed_resources`)**: Explicit allowed resource ARNs, prefixes, wildcards, or IDs.
 
 ### 6.4 Non-Blocking Soft Enforcement & Rate-Limited Warning Banner
 When cumulative volume breaches the fair-use quota:
 - **Never Drop or Block Batches**: Log processing continues at 100% full line rate. Zero log records are dropped, delayed, or dead-lettered.
 - **Structured Warning Banner**: The runtime emits a rate-limited CloudWatch log warning (at most once every 60 minutes per Lambda container):
   ```
-  [WARN_FAIR_USE_THROUGHPUT_EXCEEDED] Monthly log volume has exceeded the licensed fair-use allocation (Allocated: 25 TB). Telemetry processing continues uninterrupted without data loss. Please contact licensing@divmora.com to adjust your commitment tier.
+  [WARN_FAIR_USE_THROUGHPUT_EXCEEDED] Monthly log volume has exceeded the licensed fair-use allocation (Allocated: 10000 GB). Telemetry processing continues uninterrupted without data loss. Please contact licensing@divmora.com to adjust your commitment tier.
   ```
 - **CloudWatch EMF Metric**: The runtime emits custom metric `BytesProcessed` under namespaces `Divmora/LogProcessor` (Unit: Bytes) and `Divmora/License` with dimensions `[LicenseID, Tier, Region]` and `[LicenseID, Tier, ResourceARN]` to enable automated billing audit synchronization and true-up invoicing.
 

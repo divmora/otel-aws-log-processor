@@ -388,7 +388,9 @@ func claimsFromLibClaims(lc *liblicense.Claims) *Claims {
 	var lim *Limits
 	if lc.Limits != nil {
 		lim = &Limits{
-			MaxMonthlyTB:        int(lc.Limits["max_monthly_tb"]),
+			MaxResources:        int(lc.Limits["max_resources"]),
+			MaxAccounts:         int(lc.Limits["max_accounts"]),
+			MaxMonthlyGB:        int(lc.Limits["max_monthly_gb"]),
 			MaxContainerRecords: lc.Limits["max_container_records"],
 			Raw:                 lc.Limits,
 		}

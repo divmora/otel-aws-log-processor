@@ -291,7 +291,7 @@ func TestHandlerLicensingModes(t *testing.T) {
 			Product: "otel-aws-log-processor",
 			Plan:    license.TierPro,
 			Limits: &license.Limits{
-				MaxMonthlyTB: 10,
+				MaxMonthlyGB: 10000,
 				MaxResources: 5,
 			},
 			Scope: &license.Scope{
