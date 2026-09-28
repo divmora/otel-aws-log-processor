@@ -1366,7 +1366,8 @@ func TestScope_ResourcesSerializationAndAccessors(t *testing.T) {
 	}
 
 	claims := &Claims{
-		Scope: &s,
+		Limits: &Limits{MaxResources: 2},
+		Scope:  &s,
 	}
 	res := GetResources(claims)
 	if len(res) != 2 {
@@ -1377,6 +1378,54 @@ func TestScope_ResourcesSerializationAndAccessors(t *testing.T) {
 	}
 	if claims.IsResourceAllowed("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/my-nlb/1") {
 		t.Error("expected NLB ARN to be disallowed")
+	}
+
+	// Verify AssertResource method
+	if err := claims.AssertResource("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/1"); err != nil {
+		t.Errorf("expected AssertResource to succeed, got %v", err)
+	}
+	errNotAllowed := claims.AssertResource("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/my-nlb/1")
+	if errNotAllowed == nil {
+		t.Error("expected AssertResource to fail for unauthorized resource")
+	}
+	if !errors.Is(errNotAllowed, ErrResourceNotAllowed) {
+		t.Errorf("expected errors.Is(errNotAllowed, ErrResourceNotAllowed)=true, got false")
+	}
+	if !errors.Is(errNotAllowed, liblicense.ErrScopeMismatch) {
+		t.Errorf("expected errors.Is(errNotAllowed, liblicense.ErrScopeMismatch)=true, got false")
+	}
+	var resErr *ResourceNotAllowedError
+	if !errors.As(errNotAllowed, &resErr) {
+		t.Errorf("expected errors.As to populate *ResourceNotAllowedError")
+	}
+
+	// Verify CheckResourceLimit method
+	if err := claims.CheckResourceLimit(2); err != nil {
+		t.Errorf("expected CheckResourceLimit(2) to succeed for max 2, got %v", err)
+	}
+	errQuota := claims.CheckResourceLimit(3)
+	if errQuota == nil {
+		t.Error("expected CheckResourceLimit(3) to fail for max 2")
+	}
+	if !errors.Is(errQuota, ErrResourceQuotaExceeded) {
+		t.Errorf("expected errors.Is(errQuota, ErrResourceQuotaExceeded)=true, got false")
+	}
+	if !errors.Is(errQuota, liblicense.ErrLimitExceeded) {
+		t.Errorf("expected errors.Is(errQuota, liblicense.ErrLimitExceeded)=true, got false")
+	}
+	var quotaErr *ResourceQuotaExceededError
+	if !errors.As(errQuota, &quotaErr) {
+		t.Errorf("expected errors.As to populate *ResourceQuotaExceededError")
+	}
+
+	// Verify legacy unmarshaling from "allowed_resources"
+	legacyJSON := `{"accounts":["123456789012"],"allowed_resources":["arn:aws:elasticloadbalancing:us-east-1:*:loadbalancer/app/*"]}`
+	var sLegacy Scope
+	if err := json.Unmarshal([]byte(legacyJSON), &sLegacy); err != nil {
+		t.Fatalf("failed to unmarshal legacy Scope: %v", err)
+	}
+	if len(sLegacy.Resources) != 1 || sLegacy.Resources[0] != "arn:aws:elasticloadbalancing:us-east-1:*:loadbalancer/app/*" {
+		t.Errorf("expected legacy allowed_resources to populate Resources, got %v", sLegacy.Resources)
 	}
 }
 

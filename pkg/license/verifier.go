@@ -373,23 +373,6 @@ func claimsFromLibClaims(lc *liblicense.Claims) *Claims {
 	if lc == nil {
 		return nil
 	}
-	var s *Scope
-	if lc.Scope != nil {
-		var res []string
-		if len(lc.Scope.Custom["resources"]) > 0 {
-			res = lc.Scope.Custom["resources"]
-		}
-		s = &Scope{
-			Environments: lc.Scope.Environments,
-			Accounts:     lc.Scope.Accounts,
-			Resources:    res,
-			Regions:      lc.Scope.Regions,
-			Clusters:     lc.Scope.Clusters,
-			Namespaces:   lc.Scope.Namespaces,
-			Hosts:        lc.Scope.Hosts,
-			Custom:       lc.Scope.Custom,
-		}
-	}
 	var lim *Limits
 	if lc.Limits != nil {
 		lim = &Limits{
@@ -412,7 +395,7 @@ func claimsFromLibClaims(lc *liblicense.Claims) *Claims {
 		GracePeriodDays:      lc.GracePeriodDays,
 		Features:             lc.Features,
 		Limits:               lim,
-		Scope:                s,
+		Scope:                lc.Scope,
 		Environment:          lc.Environment,
 		Fingerprint:          lc.Fingerprint,
 		MaxVersion:           lc.MaxVersion,

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path"
-	"regexp"
 	"strings"
 	"time"
 
@@ -79,72 +78,7 @@ var DefaultTierFeatures = liblicense.TierFeatures{
 type Customer = liblicense.Customer
 
 // Scope defines operational boundaries restricting where and on what infrastructure the license is authorized.
-type Scope struct {
-	// Environments restricts execution to specific deployment environments (optional).
-	Environments []string `json:"environments,omitempty"`
-
-	// Accounts restricts execution to specific 12-digit AWS Account IDs (boundary scope).
-	Accounts []string `json:"accounts,omitempty"`
-
-	// Resources specifies exact ARNs or ARN wildcard prefixes (e.g. "arn:aws:elasticloadbalancing:us-east-1:*:loadbalancer/app/*").
-	Resources []string `json:"resources,omitempty"`
-
-	// Regions restricts execution to specific AWS regions (optional).
-	Regions []string `json:"regions,omitempty"`
-
-	// Clusters: authorized cluster IDs or ARNs (optional).
-	Clusters []string `json:"clusters,omitempty"`
-
-	// Namespaces: authorized project hierarchies, organizations, or groups (optional).
-	Namespaces []string `json:"namespaces,omitempty"`
-
-	// Hosts: authorized hostnames, FQDNs, or domain patterns (optional).
-	Hosts []string `json:"hosts,omitempty"`
-
-	// Custom: arbitrary product-specific scoping dimensions.
-	Custom map[string][]string `json:"custom,omitempty"`
-}
-
-// IsAccountAllowed reports whether the target AWS account ID is authorized by Scope.Accounts.
-func (s *Scope) IsAccountAllowed(account string) bool {
-	if s == nil || len(s.Accounts) == 0 {
-		return true
-	}
-	return matchesScopeSlice(s.Accounts, account)
-}
-
-// IsResourceAllowed reports whether the target resource ARN or identifier is authorized by Scope.Resources.
-func (s *Scope) IsResourceAllowed(resourceARN string) bool {
-	if s == nil || len(s.Resources) == 0 {
-		return true
-	}
-	resourceARN = strings.TrimSpace(resourceARN)
-	if resourceARN == "" {
-		return false
-	}
-	for _, pattern := range s.Resources {
-		if MatchResourcePattern(pattern, resourceARN) {
-			return true
-		}
-	}
-	return false
-}
-
-// IsEnvironmentAllowed reports whether the target deployment environment is authorized by Scope.Environments.
-func (s *Scope) IsEnvironmentAllowed(env string) bool {
-	if s == nil || len(s.Environments) == 0 {
-		return true
-	}
-	return matchesScopeSlice(s.Environments, env)
-}
-
-// IsRegionAllowed reports whether the target AWS region is authorized by Scope.Regions.
-func (s *Scope) IsRegionAllowed(region string) bool {
-	if s == nil || len(s.Regions) == 0 {
-		return true
-	}
-	return matchesScopeSlice(s.Regions, region)
-}
+type Scope = liblicense.Scope
 
 // Limits defines quota thresholds, throughput allocations, and evaluation constraints.
 type Limits struct {
@@ -370,6 +304,35 @@ func (c *Claims) IsResourceAllowed(resourceARN string) bool {
 	return c.Scope.IsResourceAllowed(resourceARN)
 }
 
+// AssertResource asserts that resourceARN is authorized by Scope.Resources,
+// returning *ResourceNotAllowedError if not.
+func (c *Claims) AssertResource(resourceARN string) error {
+	if c.IsResourceAllowed(resourceARN) {
+		return nil
+	}
+	return &ResourceNotAllowedError{
+		Resource: resourceARN,
+		Allowed:  GetResources(c),
+	}
+}
+
+// CheckResourceLimit checks if activeCount exceeds the licensed max_resources quota.
+// If the limit is 0 or uncapped, it returns nil.
+// If activeCount exceeds the limit, it returns *ResourceQuotaExceededError.
+func (c *Claims) CheckResourceLimit(activeCount int64) error {
+	max := GetMaxResources(c)
+	if max <= 0 {
+		return nil
+	}
+	if activeCount > int64(max) {
+		return &ResourceQuotaExceededError{
+			Current: activeCount,
+			Allowed: int64(max),
+		}
+	}
+	return nil
+}
+
 // DaysRemaining returns days until expiration (positive) or 0 if expired.
 func (c *Claims) DaysRemaining() int {
 	return c.DaysRemainingAt(time.Now().UTC())
@@ -537,10 +500,19 @@ var (
 	ErrCommercialLicenseRequired = liblicense.ErrCommercialLicenseRequired
 
 	// ErrResourceQuotaExceeded is returned when the count of active monitored resources exceeds MaxResources.
-	ErrResourceQuotaExceeded = errors.New("commercial license monitored resource quota exceeded")
+	ErrResourceQuotaExceeded = liblicense.ErrResourceQuotaExceeded
 
 	// ErrResourceNotAllowed is returned when a resource ARN is not authorized by Scope.Resources.
-	ErrResourceNotAllowed = errors.New("resource ARN not authorized by commercial license")
+	ErrResourceNotAllowed = liblicense.ErrResourceNotAllowed
+)
+
+// Resource quota and scope structured error types.
+type (
+	// ResourceQuotaExceededError provides structured details when monitored resource count exceeds quota.
+	ResourceQuotaExceededError = liblicense.ResourceQuotaExceededError
+
+	// ResourceNotAllowedError provides structured details when a resource is not authorized by Scope.Resources.
+	ResourceNotAllowedError = liblicense.ResourceNotAllowedError
 )
 
 // LicenseRevokedError provides structured details when a license has been invalidated by a CRL.
@@ -608,6 +580,12 @@ func GetResources(c *Claims) []string {
 		return nil
 	}
 	return c.Scope.Resources
+}
+
+// GetAllowedResources returns the list of authorized resource patterns from Claims.Scope.Resources.
+// Alias for GetResources for compatibility.
+func GetAllowedResources(c *Claims) []string {
+	return GetResources(c)
 }
 
 // GetMaxAccounts returns the maximum allowed AWS accounts from Claims.Limits.
@@ -760,34 +738,6 @@ func IsDeterministicLicenseError(err error) bool {
 		strings.Contains(msg, "not authorized")
 }
 
-func matchesScopeSlice(allowed []string, target string) bool {
-	if len(allowed) == 0 {
-		return true
-	}
-	targetTrimmed := strings.TrimSpace(target)
-	if targetTrimmed == "" {
-		return false
-	}
-	targetLower := strings.ToLower(targetTrimmed)
-
-	for _, entry := range allowed {
-		entryTrimmed := strings.TrimSpace(entry)
-		entryLower := strings.ToLower(entryTrimmed)
-		if entryLower == "*" || entryLower == "all" {
-			return true
-		}
-		if entryLower == targetLower {
-			return true
-		}
-		if strings.ContainsAny(entryLower, "*?[") {
-			if matched, err := path.Match(entryLower, targetLower); err == nil && matched {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // MatchResourcePattern matches a resource ARN or identifier against a pattern.
 // Supported patterns:
 //   - "*" or "all": matches any resource
@@ -795,95 +745,7 @@ func matchesScopeSlice(allowed []string, target string) bool {
 //   - Wildcards (* and ?) anywhere in the pattern
 //   - Pattern without "arn:aws:" prefix matching against the resource suffix of an ARN
 func MatchResourcePattern(pattern string, resourceARN string) bool {
-	pattern = strings.TrimSpace(pattern)
-	resourceARN = strings.TrimSpace(resourceARN)
-
-	if pattern == "" || resourceARN == "" {
-		return false
-	}
-
-	if pattern == "*" || strings.EqualFold(pattern, "all") {
-		return true
-	}
-
-	if strings.EqualFold(pattern, resourceARN) {
-		return true
-	}
-
-	// Direct wildcard match
-	if matchWildcard(pattern, resourceARN) {
-		return true
-	}
-
-	// If resourceARN is a full ARN, check if pattern matches against the resource suffix
-	if strings.HasPrefix(strings.ToLower(resourceARN), "arn:aws:") {
-		// Extract suffix after service-specific resource prefixes:
-		// e.g. ":loadbalancer/" -> "app/my-alb/50dc6c495c0c9188"
-		// e.g. ":distribution/" -> "EDFDVBD632BHFR5"
-		// e.g. "/webacl/" -> "my-webacl/uuid" or "my-webacl"
-		for _, sep := range []string{":loadbalancer/", ":distribution/", "/webacl/", ":targetgroup/"} {
-			if idx := strings.Index(strings.ToLower(resourceARN), sep); idx != -1 {
-				suffix := resourceARN[idx+len(sep):]
-				if strings.EqualFold(pattern, suffix) || matchWildcard(pattern, suffix) {
-					return true
-				}
-				// Also if suffix has multiple parts like "my-webacl/uuid", check "my-webacl"
-				if parts := strings.Split(suffix, "/"); len(parts) > 1 {
-					if strings.EqualFold(pattern, parts[0]) || matchWildcard(pattern, parts[0]) {
-						return true
-					}
-				}
-			}
-		}
-
-		// Or 6th colon component: arn:partition:service:region:account:resource-id
-		parts := strings.SplitN(resourceARN, ":", 6)
-		if len(parts) >= 6 {
-			resPart := parts[5]
-			if strings.EqualFold(pattern, resPart) || matchWildcard(pattern, resPart) {
-				return true
-			}
-		}
-	}
-
-	// If pattern is a full ARN but resourceARN is a short identifier:
-	if strings.HasPrefix(strings.ToLower(pattern), "arn:aws:") && !strings.HasPrefix(strings.ToLower(resourceARN), "arn:aws:") {
-		for _, sep := range []string{":loadbalancer/", ":distribution/", "/webacl/", ":targetgroup/"} {
-			if idx := strings.Index(strings.ToLower(pattern), sep); idx != -1 {
-				patternSuffix := pattern[idx+len(sep):]
-				if strings.EqualFold(patternSuffix, resourceARN) || matchWildcard(patternSuffix, resourceARN) {
-					return true
-				}
-			}
-		}
-	}
-
-	return false
-}
-
-func matchWildcard(pattern, text string) bool {
-	var b strings.Builder
-	b.WriteString("(?i)^")
-	for i := 0; i < len(pattern); i++ {
-		c := pattern[i]
-		switch c {
-		case '*':
-			b.WriteString(".*")
-		case '?':
-			b.WriteString(".")
-		case '.', '+', '(', ')', '[', ']', '{', '}', '^', '$', '\\', '|':
-			b.WriteByte('\\')
-			b.WriteByte(c)
-		default:
-			b.WriteByte(c)
-		}
-	}
-	b.WriteString("$")
-	re, err := regexp.Compile(b.String())
-	if err != nil {
-		return false
-	}
-	return re.MatchString(text)
+	return liblicense.MatchResourcePattern(pattern, resourceARN)
 }
 
 func hasFeatureInList(target string, list []string) bool {

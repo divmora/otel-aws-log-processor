@@ -8,7 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.33.5
 	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.73.0
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.113.1
-	github.com/divmora/license-go v1.3.1
+	github.com/divmora/license-go v1.4.0
 	github.com/parquet-go/parquet-go v0.32.0
 	github.com/stretchr/testify v1.12.1
 )
