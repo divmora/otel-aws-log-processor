@@ -117,6 +117,22 @@ Deploy the Lambda function with the following least-privilege IAM policy:
         "logs:PutLogEvents"
       ],
       "Resource": "arn:aws:logs:*:*:*"
+    },
+    {
+      "Sid": "CloudWatchMetrics",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:PutMetricData"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "cloudwatch:namespace": [
+            "Divmora/LogProcessor",
+            "Divmora/License"
+          ]
+        }
+      }
     }
   ]
 }

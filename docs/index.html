@@ -899,6 +899,22 @@ resource "aws_iam_policy" "lambda_policy" {
           "logs:PutLogEvents"
         ]
         Resource = "arn:aws:logs:*:*:*"
+      },
+      {
+        Sid    = "CloudWatchMetrics"
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = [
+              "Divmora/LogProcessor",
+              "Divmora/License"
+            ]
+          }
+        }
       }
     ]
   })
@@ -1006,6 +1022,17 @@ Resources:
             BucketName: "*"
         - SQSPollerPolicy:
             QueueName: !GetAtt LogIngestionQueue.QueueName
+        - Statement:
+            - Sid: CloudWatchMetrics
+              Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  cloudwatch:namespace:
+                    - Divmora/LogProcessor
+                    - Divmora/License
       Events:
         SQSEvent:
           Type: SQS
@@ -1156,6 +1183,22 @@ aws lambda create-function \
         "logs:PutLogEvents"
       ],
       "Resource": "arn:aws:logs:*:*:*"
+    },
+    {
+      "Sid": "CloudWatchMetrics",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:PutMetricData"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "cloudwatch:namespace": [
+            "Divmora/LogProcessor",
+            "Divmora/License"
+          ]
+        }
+      }
     }
   ]
 }</code></pre>
