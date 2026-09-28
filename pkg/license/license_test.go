@@ -1346,9 +1346,11 @@ func TestResourceQuota_StrictAndWarn(t *testing.T) {
 		Plan:      TierPro,
 		IssuedAt:  now,
 		ExpiresAt: now.AddDate(1, 0, 0),
+		Limits: &Limits{
+			MaxResources: 2,
+		},
 		Scope: &Scope{
 			Accounts:         []string{"123456789012"},
-			MaxResources:     2,
 			AllowedResources: []string{"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/*"},
 		},
 	}
@@ -1607,9 +1609,10 @@ func TestMultiAccountSpokeSetup_ResourceQuota(t *testing.T) {
 		Plan:      TierEnterprise,
 		IssuedAt:  now,
 		ExpiresAt: now.AddDate(1, 0, 0),
-		Scope: &Scope{
+		Limits: &Limits{
 			MaxResources: 25,
 		},
+		Scope: &Scope{},
 	}
 	token := signTestToken(claims, testPrivKey)
 
@@ -1678,9 +1681,11 @@ func TestSingleAccountLargeResourceBreach(t *testing.T) {
 		Plan:      TierPro,
 		IssuedAt:  now,
 		ExpiresAt: now.AddDate(1, 0, 0),
-		Scope: &Scope{
-			Accounts:     []string{"123456789012"},
+		Limits: &Limits{
 			MaxResources: 25,
+		},
+		Scope: &Scope{
+			Accounts: []string{"123456789012"},
 		},
 	}
 	token := signTestToken(claims, testPrivKey)
@@ -1966,10 +1971,10 @@ func TestEnforce_ThroughputFairUseNonBlocking(t *testing.T) {
 		ExpiresAt: time.Now().UTC().Add(365 * 24 * time.Hour),
 		Limits: &Limits{
 			MaxMonthlyTB: 25,
+			MaxResources: 10,
 		},
 		Scope: &Scope{
-			Accounts:     []string{"123456789012"},
-			MaxResources: 10,
+			Accounts: []string{"123456789012"},
 		},
 	}, privKey)
 
@@ -2360,3 +2365,108 @@ func TestEmitMetrics_Routing(t *testing.T) {
 		}
 	})
 }
+
+func TestLimits_QuotasAndAccessors(t *testing.T) {
+	t.Run("JSONUnmarshalAndAccessors", func(t *testing.T) {
+		payload := []byte(`{
+			"max_resources": 50,
+			"max_accounts": 5,
+			"max_monthly_tb": 20,
+			"max_container_records": 100000,
+			"custom_limit": 999
+		}`)
+
+		var l Limits
+		if err := json.Unmarshal(payload, &l); err != nil {
+			t.Fatalf("failed to unmarshal Limits: %v", err)
+		}
+
+		if l.MaxResources != 50 {
+			t.Errorf("expected MaxResources=50, got %d", l.MaxResources)
+		}
+		if l.MaxAccounts != 5 {
+			t.Errorf("expected MaxAccounts=5, got %d", l.MaxAccounts)
+		}
+		if l.MaxMonthlyTB != 20 {
+			t.Errorf("expected MaxMonthlyTB=20, got %d", l.MaxMonthlyTB)
+		}
+		if l.MaxContainerRecords != 100000 {
+			t.Errorf("expected MaxContainerRecords=100000, got %d", l.MaxContainerRecords)
+		}
+		if l.Raw["custom_limit"] != 999 {
+			t.Errorf("expected Raw[custom_limit]=999, got %d", l.Raw["custom_limit"])
+		}
+
+		claims := &Claims{
+			Limits: &l,
+		}
+		if mr := GetMaxResources(claims); mr != 50 {
+			t.Errorf("expected GetMaxResources=50, got %d", mr)
+		}
+		if ma := GetMaxAccounts(claims); ma != 5 {
+			t.Errorf("expected GetMaxAccounts=5, got %d", ma)
+		}
+		if mtb := GetMaxMonthlyTB(claims); mtb != 20 {
+			t.Errorf("expected GetMaxMonthlyTB=20, got %d", mtb)
+		}
+	})
+
+	t.Run("NilAndEmptyLimits", func(t *testing.T) {
+		if GetMaxResources(nil) != 0 {
+			t.Errorf("expected 0 for nil claims")
+		}
+		if GetMaxAccounts(nil) != 0 {
+			t.Errorf("expected 0 for nil claims")
+		}
+		if GetMaxMonthlyTB(nil) != 0 {
+			t.Errorf("expected 0 for nil claims")
+		}
+
+		emptyClaims := &Claims{}
+		if GetMaxResources(emptyClaims) != 0 {
+			t.Errorf("expected 0 for empty claims")
+		}
+		if GetMaxAccounts(emptyClaims) != 0 {
+			t.Errorf("expected 0 for empty claims")
+		}
+		if GetMaxMonthlyTB(emptyClaims) != 0 {
+			t.Errorf("expected 0 for empty claims")
+		}
+	})
+
+	t.Run("JSONMarshalRoundTrip", func(t *testing.T) {
+		l := Limits{
+			MaxResources:        15,
+			MaxAccounts:         2,
+			MaxMonthlyTB:        5,
+			MaxContainerRecords: 50000,
+			Raw: map[string]int64{
+				"custom_val": 42,
+			},
+		}
+
+		data, err := json.Marshal(&l)
+		if err != nil {
+			t.Fatalf("failed to marshal Limits: %v", err)
+		}
+
+		var roundTrip Limits
+		if err := json.Unmarshal(data, &roundTrip); err != nil {
+			t.Fatalf("failed to unmarshal roundtrip: %v", err)
+		}
+
+		if roundTrip.MaxResources != 15 {
+			t.Errorf("expected MaxResources=15, got %d", roundTrip.MaxResources)
+		}
+		if roundTrip.MaxAccounts != 2 {
+			t.Errorf("expected MaxAccounts=2, got %d", roundTrip.MaxAccounts)
+		}
+		if roundTrip.MaxMonthlyTB != 5 {
+			t.Errorf("expected MaxMonthlyTB=5, got %d", roundTrip.MaxMonthlyTB)
+		}
+		if roundTrip.Raw["custom_val"] != 42 {
+			t.Errorf("expected Raw[custom_val]=42, got %d", roundTrip.Raw["custom_val"])
+		}
+	})
+}
+

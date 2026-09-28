@@ -83,14 +83,8 @@ type Scope struct {
 	// Environments restricts execution to specific deployment environments (optional).
 	Environments []string `json:"environments,omitempty"`
 
-	// Accounts restricts execution to specific 12-digit AWS Account IDs (legacy & boundary scope).
+	// Accounts restricts execution to specific 12-digit AWS Account IDs (boundary scope).
 	Accounts []string `json:"accounts,omitempty"`
-
-	// MaxAccounts specifies maximum allowed AWS spoke accounts (0 = unlimited).
-	MaxAccounts int `json:"max_accounts,omitempty"`
-
-	// MaxResources specifies maximum cumulative monitored resources (ALBs, NLBs, CloudFront, WAF) (0 = unlimited).
-	MaxResources int `json:"max_resources,omitempty"`
 
 	// AllowedResources specifies exact ARNs or ARN wildcard prefixes (e.g. "arn:aws:elasticloadbalancing:us-east-1:*:loadbalancer/app/*").
 	AllowedResources []string `json:"allowed_resources,omitempty"`
@@ -154,6 +148,12 @@ func (s *Scope) IsRegionAllowed(region string) bool {
 
 // Limits defines quota thresholds, throughput allocations, and evaluation constraints.
 type Limits struct {
+	// MaxResources specifies maximum cumulative monitored resources (ALBs, NLBs, CloudFront, WAF) (0 = unlimited).
+	MaxResources int `json:"max_resources,omitempty"`
+
+	// MaxAccounts specifies maximum allowed AWS spoke accounts (0 = unlimited).
+	MaxAccounts int `json:"max_accounts,omitempty"`
+
 	// MaxMonthlyTB specifies the fair-use monthly throughput ceiling in Terabytes (0 = uncapped).
 	MaxMonthlyTB int `json:"max_monthly_tb,omitempty"`
 
@@ -178,6 +178,16 @@ func (l *Limits) UnmarshalJSON(data []byte) error {
 	var raw map[string]int64
 	if err := json.Unmarshal(data, &raw); err == nil {
 		l.Raw = raw
+		if l.MaxResources == 0 {
+			if v, ok := raw["max_resources"]; ok {
+				l.MaxResources = int(v)
+			}
+		}
+		if l.MaxAccounts == 0 {
+			if v, ok := raw["max_accounts"]; ok {
+				l.MaxAccounts = int(v)
+			}
+		}
 		if l.MaxMonthlyTB == 0 {
 			if v, ok := raw["max_monthly_tb"]; ok {
 				l.MaxMonthlyTB = int(v)
@@ -190,6 +200,27 @@ func (l *Limits) UnmarshalJSON(data []byte) error {
 		}
 	}
 	return nil
+}
+
+// MarshalJSON implements custom JSON marshaling for Limits ensuring all fields and Raw limits are included.
+func (l *Limits) MarshalJSON() ([]byte, error) {
+	out := make(map[string]any)
+	for k, v := range l.Raw {
+		out[k] = v
+	}
+	if l.MaxResources > 0 {
+		out["max_resources"] = l.MaxResources
+	}
+	if l.MaxAccounts > 0 {
+		out["max_accounts"] = l.MaxAccounts
+	}
+	if l.MaxMonthlyTB > 0 {
+		out["max_monthly_tb"] = l.MaxMonthlyTB
+	}
+	if l.MaxContainerRecords > 0 {
+		out["max_container_records"] = l.MaxContainerRecords
+	}
+	return json.Marshal(out)
 }
 
 // Claims encapsulates the canonical cryptographic claims embedded in a signed license token.
@@ -556,13 +587,19 @@ func GetAllowedAccounts(c *Claims) []string {
 	return c.Scope.Accounts
 }
 
-// GetMaxResources returns the maximum authorized monitored resources from Claims.Scope.MaxResources.
+// GetMaxResources returns the maximum authorized monitored resources from Claims.Limits.
 // Returns 0 if uncapped or unlimited.
 func GetMaxResources(c *Claims) int {
-	if c == nil || c.Scope == nil || c.Scope.MaxResources <= 0 {
+	if c == nil || c.Limits == nil {
 		return 0
 	}
-	return c.Scope.MaxResources
+	if c.Limits.MaxResources > 0 {
+		return c.Limits.MaxResources
+	}
+	if v, ok := c.Limits.Raw["max_resources"]; ok && v > 0 {
+		return int(v)
+	}
+	return 0
 }
 
 // GetAllowedResources returns the list of authorized resource patterns from Claims.Scope.AllowedResources.
@@ -573,13 +610,19 @@ func GetAllowedResources(c *Claims) []string {
 	return c.Scope.AllowedResources
 }
 
-// GetMaxAccounts returns the maximum allowed AWS accounts from Claims.Scope.MaxAccounts.
+// GetMaxAccounts returns the maximum allowed AWS accounts from Claims.Limits.
 // Returns 0 if uncapped or unlimited.
 func GetMaxAccounts(c *Claims) int {
-	if c == nil || c.Scope == nil || c.Scope.MaxAccounts <= 0 {
+	if c == nil || c.Limits == nil {
 		return 0
 	}
-	return c.Scope.MaxAccounts
+	if c.Limits.MaxAccounts > 0 {
+		return c.Limits.MaxAccounts
+	}
+	if v, ok := c.Limits.Raw["max_accounts"]; ok && v > 0 {
+		return int(v)
+	}
+	return 0
 }
 
 // IsResourceAllowed checks whether a monitored resource ARN or identifier is authorized

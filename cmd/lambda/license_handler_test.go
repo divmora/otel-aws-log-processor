@@ -218,9 +218,11 @@ func TestHandlerLicensingModes(t *testing.T) {
 			},
 			Product: "otel-aws-log-processor",
 			Plan:    license.TierPro,
-			Scope: &license.Scope{
-				Accounts:     []string{"123456789012"},
+			Limits: &license.Limits{
 				MaxResources: 2,
+			},
+			Scope: &license.Scope{
+				Accounts: []string{"123456789012"},
 				AllowedResources: []string{
 					"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/*",
 				},
@@ -290,10 +292,10 @@ func TestHandlerLicensingModes(t *testing.T) {
 			Plan:    license.TierPro,
 			Limits: &license.Limits{
 				MaxMonthlyTB: 10,
+				MaxResources: 5,
 			},
 			Scope: &license.Scope{
-				Accounts:     []string{"123456789012"},
-				MaxResources: 5,
+				Accounts: []string{"123456789012"},
 			},
 			IssuedAt:  time.Now().UTC(),
 			ExpiresAt: time.Now().UTC().AddDate(1, 0, 0),

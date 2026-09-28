@@ -683,8 +683,10 @@ func AppendLicenseAttributes(attrs []model.OTelAttribute, status *ValidationStat
 	if accountID != "" {
 		model.AddAttr(&attrs, "divmora.license.account", accountID)
 	}
-	if status.Claims != nil && status.Claims.Scope != nil && status.Claims.Scope.MaxResources > 0 {
-		model.AddInt64Attr(&attrs, "divmora.license.max_resources", int64(status.Claims.Scope.MaxResources))
+	if status.Claims != nil {
+		if mr := GetMaxResources(status.Claims); mr > 0 {
+			model.AddInt64Attr(&attrs, "divmora.license.max_resources", int64(mr))
+		}
 	}
 
 	return attrs
