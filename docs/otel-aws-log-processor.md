@@ -99,7 +99,7 @@ License tokens are signed with Ed25519 and contain claims embedded in `claims.Sc
   },
   "scope": {
     "accounts": ["123456789012", "234567890123", "345678901234"],
-    "allowed_resources": [
+    "resources": [
       "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/*",
       "EDFDVBD632BHFR5"
     ]
@@ -114,7 +114,7 @@ License tokens are signed with Ed25519 and contain claims embedded in `claims.Sc
 - **`claims.Limits.MaxResources` (`int`)**: Maximum unique active monitored resources allowed across the container's lifecycle.
   - **Backward Compatibility**: If `max_resources == 0` or omitted, resource tracking is **uncapped**.
 - **`claims.Limits.MaxAccounts` (`int`)**: Maximum unique AWS account IDs permitted.
-- **`claims.Scope.AllowedResources` (`[]string`)**: Optional explicit list of permitted resource ARNs, prefixes, wildcards, or IDs.
+- **`claims.Scope.Resources` (`[]string`)**: Optional explicit list of permitted resource ARNs, prefixes, wildcards, or IDs.
   - Supports glob wildcards (`*` and `?`) spanning path boundaries.
   - Supports short ID matching against ARN suffixes.
 

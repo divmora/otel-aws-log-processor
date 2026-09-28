@@ -223,7 +223,7 @@ func TestHandlerLicensingModes(t *testing.T) {
 			},
 			Scope: &license.Scope{
 				Accounts: []string{"123456789012"},
-				AllowedResources: []string{
+				Resources: []string{
 					"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/*",
 				},
 			},

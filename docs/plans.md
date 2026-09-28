@@ -143,15 +143,19 @@ Commercial Ed25519 tokens incorporate resource quota definitions directly into t
 ```json
 {
   "id": "lic_9901abcdef",
-  "tier": "pro",
+  "plan": "pro",
   "product": "otel-aws-log-processor",
   "customer": "Example Corp",
   "features": ["parser.alb", "parser.nlb", "parser.cloudfront.gzip", "parser.waf", "metrics.emf"],
+  "limits": {
+    "max_resources": 25,
+    "max_accounts": 3,
+    "max_monthly_gb": 10000,
+    "max_container_records": 50000
+  },
   "scope": {
     "accounts": ["123456789012", "234567890123", "345678901234"],
-    "max_accounts": 3,
-    "max_resources": 25,
-    "allowed_resources": [
+    "resources": [
       "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/*",
       "arn:aws:elasticloadbalancing:us-east-1:234567890123:loadbalancer/app/api-*",
       "EDFDVBD632BHFR5"
@@ -162,13 +166,13 @@ Commercial Ed25519 tokens incorporate resource quota definitions directly into t
 ```
 
 #### Field Specifications:
-- `claims.Scope.MaxResources` (`int`): Maximum count of unique active monitored resources permitted within the running Lambda container lifecycle.
+- `claims.Limits.MaxResources` (`int`): Maximum count of unique active monitored resources permitted within the running Lambda container lifecycle.
   - **Backwards Compatibility**: When `max_resources == 0` or is omitted (such as in legacy commercial licenses), the resource count is **uncapped**, ensuring zero disruption to existing production contracts.
-- `claims.Scope.AllowedResources` (`[]string`): Optional list of authorized resource identifiers, supporting:
+- `claims.Scope.Resources` (`[]string`): Optional list of authorized resource identifiers, supporting:
   - Exact ARN or short ID matches (`arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/api/50dc6c495c0c9188` or `EDFDVBD632BHFR5`).
   - Hierarchical wildcard glob patterns (`*` and `?`), crossing `/` and `:` delimiters (e.g. `arn:aws:elasticloadbalancing:*:*:loadbalancer/app/prod-*`).
   - Suffix matching against short load balancer IDs (e.g. matching `app/prod-api/123` against full ARN).
-- `claims.Scope.MaxAccounts` (`int`): Maximum count of AWS accounts authorized under the license pack.
+- `claims.Limits.MaxAccounts` (`int`): Maximum count of AWS accounts authorized under the license pack.
 
 ### 5.4 In-Container Runtime Tracking & Enforcement
 
@@ -178,7 +182,7 @@ The processor runtime utilizes a thread-safe `ResourceTracker` (`sync.RWMutex`) 
 2. **Dynamic Ingestion Extraction**: As log records are parsed, resource identifiers are extracted from both S3 keys and parsed record attributes.
 3. **Tracking & Deduplication**: Active resources are added to the container's `ResourceTracker`.
 4. **Enforcement Modes**:
-   - **`DIVMORA_LICENSE_MODE=warn` (Default)**: If active monitored resources exceed `MaxResources`, or a resource is not listed in `AllowedResources`, the invocation logs a structured warning and stamps `divmora.license.status=resource_quota_exceeded` or `resource_not_allowed` on exported telemetry without interrupting the data stream.
+   - **`DIVMORA_LICENSE_MODE=warn` (Default)**: If active monitored resources exceed `MaxResources`, or a resource is not listed in `Resources`, the invocation logs a structured warning and stamps `divmora.license.status=resource_quota_exceeded` or `resource_not_allowed` on exported telemetry without interrupting the data stream.
    - **`DIVMORA_LICENSE_MODE=strict`**: Quota breaches return deterministic errors (`ErrResourceQuotaExceeded` or `ErrResourceNotAllowed`). Combined with `DIVMORA_LICENSE_FAILURE_ACTION=discard`, the Lambda acknowledges the message to cleanly halt cost-inflating SQS redrive loops while recording violation telemetry.
 5. **CloudWatch EMF Metric Schema**:
    The runtime publishes dimensioned metrics under the `Divmora/LogProcessor` and `Divmora/License` namespaces with sub-millisecond async emission:
@@ -253,7 +257,7 @@ Throughput allocations and resource quotas are cryptographically encoded in the 
   },
   "scope": {
     "accounts": ["123456789012"],
-    "allowed_resources": [
+    "resources": [
       "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/*"
     ]
   }
@@ -263,7 +267,7 @@ Throughput allocations and resource quotas are cryptographically encoded in the 
 - **`claims.Limits.MaxMonthlyGB` (`max_monthly_gb`)**: Specifies the fair-use monthly throughput ceiling in Gigabytes (e.g. `50` for Community, `10000` for Pro 10 TB, `50000` for Enterprise 50 TB). A value of `0` or omitted indicates an uncapped or unlimited allocation (preserving 100% backward compatibility for existing commercial licenses).
 - **`claims.Limits.MaxResources` (`max_resources`)**: Maximum cumulative unique monitored resources authorized for log ingestion.
 - **`claims.Limits.MaxAccounts` (`max_accounts`)**: Maximum allowed spoke AWS accounts.
-- **`claims.Scope.AllowedResources` (`allowed_resources`)**: Explicit allowed resource ARNs, prefixes, wildcards, or IDs.
+- **`claims.Scope.Resources` (`resources`)**: Explicit allowed resource ARNs, prefixes, wildcards, or IDs.
 
 ### 6.4 Non-Blocking Soft Enforcement & Rate-Limited Warning Banner
 When cumulative volume breaches the fair-use quota:

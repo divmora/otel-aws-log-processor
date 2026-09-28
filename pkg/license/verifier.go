@@ -375,9 +375,14 @@ func claimsFromLibClaims(lc *liblicense.Claims) *Claims {
 	}
 	var s *Scope
 	if lc.Scope != nil {
+		var res []string
+		if len(lc.Scope.Custom["resources"]) > 0 {
+			res = lc.Scope.Custom["resources"]
+		}
 		s = &Scope{
 			Environments: lc.Scope.Environments,
 			Accounts:     lc.Scope.Accounts,
+			Resources:    res,
 			Regions:      lc.Scope.Regions,
 			Clusters:     lc.Scope.Clusters,
 			Namespaces:   lc.Scope.Namespaces,

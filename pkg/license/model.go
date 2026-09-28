@@ -86,8 +86,8 @@ type Scope struct {
 	// Accounts restricts execution to specific 12-digit AWS Account IDs (boundary scope).
 	Accounts []string `json:"accounts,omitempty"`
 
-	// AllowedResources specifies exact ARNs or ARN wildcard prefixes (e.g. "arn:aws:elasticloadbalancing:us-east-1:*:loadbalancer/app/*").
-	AllowedResources []string `json:"allowed_resources,omitempty"`
+	// Resources specifies exact ARNs or ARN wildcard prefixes (e.g. "arn:aws:elasticloadbalancing:us-east-1:*:loadbalancer/app/*").
+	Resources []string `json:"resources,omitempty"`
 
 	// Regions restricts execution to specific AWS regions (optional).
 	Regions []string `json:"regions,omitempty"`
@@ -113,16 +113,16 @@ func (s *Scope) IsAccountAllowed(account string) bool {
 	return matchesScopeSlice(s.Accounts, account)
 }
 
-// IsResourceAllowed reports whether the target resource ARN or identifier is authorized by Scope.AllowedResources.
+// IsResourceAllowed reports whether the target resource ARN or identifier is authorized by Scope.Resources.
 func (s *Scope) IsResourceAllowed(resourceARN string) bool {
-	if s == nil || len(s.AllowedResources) == 0 {
+	if s == nil || len(s.Resources) == 0 {
 		return true
 	}
 	resourceARN = strings.TrimSpace(resourceARN)
 	if resourceARN == "" {
 		return false
 	}
-	for _, pattern := range s.AllowedResources {
+	for _, pattern := range s.Resources {
 		if MatchResourcePattern(pattern, resourceARN) {
 			return true
 		}
@@ -364,7 +364,7 @@ func (c *Claims) IsAccountAllowed(account string) bool {
 
 // IsResourceAllowed reports whether the target monitored resource is authorized.
 func (c *Claims) IsResourceAllowed(resourceARN string) bool {
-	if c == nil || c.Scope == nil || len(c.Scope.AllowedResources) == 0 {
+	if c == nil || c.Scope == nil || len(c.Scope.Resources) == 0 {
 		return true
 	}
 	return c.Scope.IsResourceAllowed(resourceARN)
@@ -539,7 +539,7 @@ var (
 	// ErrResourceQuotaExceeded is returned when the count of active monitored resources exceeds MaxResources.
 	ErrResourceQuotaExceeded = errors.New("commercial license monitored resource quota exceeded")
 
-	// ErrResourceNotAllowed is returned when a resource ARN is not authorized by AllowedResources.
+	// ErrResourceNotAllowed is returned when a resource ARN is not authorized by Scope.Resources.
 	ErrResourceNotAllowed = errors.New("resource ARN not authorized by commercial license")
 )
 
@@ -602,12 +602,12 @@ func GetMaxResources(c *Claims) int {
 	return 0
 }
 
-// GetAllowedResources returns the list of authorized resource patterns from Claims.Scope.AllowedResources.
-func GetAllowedResources(c *Claims) []string {
+// GetResources returns the list of authorized resource patterns from Claims.Scope.Resources.
+func GetResources(c *Claims) []string {
 	if c == nil || c.Scope == nil {
 		return nil
 	}
-	return c.Scope.AllowedResources
+	return c.Scope.Resources
 }
 
 // GetMaxAccounts returns the maximum allowed AWS accounts from Claims.Limits.
@@ -626,10 +626,10 @@ func GetMaxAccounts(c *Claims) int {
 }
 
 // IsResourceAllowed checks whether a monitored resource ARN or identifier is authorized
-// by Claims.Scope.AllowedResources.
-// If AllowedResources is nil or empty, all resources are authorized (unrestricted).
+// by Claims.Scope.Resources.
+// If Resources is nil or empty, all resources are authorized (unrestricted).
 func IsResourceAllowed(c *Claims, resourceARN string) bool {
-	if c == nil || c.Scope == nil || len(c.Scope.AllowedResources) == 0 {
+	if c == nil || c.Scope == nil || len(c.Scope.Resources) == 0 {
 		return true
 	}
 	return c.Scope.IsResourceAllowed(resourceARN)

@@ -567,7 +567,7 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 		}
 	}
 
-	// Verify Resource Entitlements for Source Resource ARNs against AllowedResources
+	// Verify Resource Entitlements for Source Resource ARNs against Scope.Resources
 	for _, resARN := range opts.SourceResourceARNs {
 		resARN = strings.TrimSpace(resARN)
 		if resARN == "" {
@@ -575,7 +575,7 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 		}
 		if !status.Claims.IsResourceAllowed(resARN) {
 			mismatchMsg := fmt.Sprintf("COMMERCIAL LICENSE RESOURCE NOT ALLOWED: License does not authorize resource '%s' (allowed: %v)",
-				resARN, GetAllowedResources(status.Claims))
+				resARN, GetResources(status.Claims))
 			slog.Warn(mismatchMsg, "resource", resARN, "contact", "licensing@divmora.com")
 			status.Valid = false
 			status.StatusReason = "resource_not_allowed"

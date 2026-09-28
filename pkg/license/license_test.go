@@ -1216,7 +1216,7 @@ func TestPreflightEnforce(t *testing.T) {
 	}
 }
 
-func TestAllowedResources_PatternMatching(t *testing.T) {
+func TestResources_PatternMatching(t *testing.T) {
 	tests := []struct {
 		name        string
 		pattern     string
@@ -1337,6 +1337,49 @@ func TestAllowedResources_PatternMatching(t *testing.T) {
 	}
 }
 
+func TestScope_ResourcesSerializationAndAccessors(t *testing.T) {
+	scopeJSON := `{"accounts":["123456789012"],"resources":["arn:aws:elasticloadbalancing:us-east-1:*:loadbalancer/app/*","EDFDVBD632BHFR5"]}`
+	var s Scope
+	if err := json.Unmarshal([]byte(scopeJSON), &s); err != nil {
+		t.Fatalf("failed to unmarshal Scope: %v", err)
+	}
+
+	if len(s.Resources) != 2 {
+		t.Fatalf("expected 2 resources, got %d", len(s.Resources))
+	}
+	if s.Resources[0] != "arn:aws:elasticloadbalancing:us-east-1:*:loadbalancer/app/*" {
+		t.Errorf("unexpected resource[0]: %s", s.Resources[0])
+	}
+	if s.Resources[1] != "EDFDVBD632BHFR5" {
+		t.Errorf("unexpected resource[1]: %s", s.Resources[1])
+	}
+
+	marshaled, err := json.Marshal(&s)
+	if err != nil {
+		t.Fatalf("failed to marshal Scope: %v", err)
+	}
+	if !strings.Contains(string(marshaled), `"resources":`) {
+		t.Errorf("marshaled json missing 'resources': %s", string(marshaled))
+	}
+	if strings.Contains(string(marshaled), `"allowed_resources":`) {
+		t.Errorf("marshaled json should not contain 'allowed_resources': %s", string(marshaled))
+	}
+
+	claims := &Claims{
+		Scope: &s,
+	}
+	res := GetResources(claims)
+	if len(res) != 2 {
+		t.Fatalf("expected GetResources to return 2 items, got %d", len(res))
+	}
+	if !claims.IsResourceAllowed("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/1") {
+		t.Error("expected ALB ARN to be allowed")
+	}
+	if claims.IsResourceAllowed("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/my-nlb/1") {
+		t.Error("expected NLB ARN to be disallowed")
+	}
+}
+
 func TestResourceQuota_StrictAndWarn(t *testing.T) {
 	now := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
 	claims := &Claims{
@@ -1350,8 +1393,8 @@ func TestResourceQuota_StrictAndWarn(t *testing.T) {
 			MaxResources: 2,
 		},
 		Scope: &Scope{
-			Accounts:         []string{"123456789012"},
-			AllowedResources: []string{"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/*"},
+			Accounts:  []string{"123456789012"},
+			Resources: []string{"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/*"},
 		},
 	}
 	token := signTestToken(claims, testPrivKey)
@@ -1548,7 +1591,7 @@ func TestResourceTracker_LifecycleAndConcurrency(t *testing.T) {
 func TestLegacyToken_BackwardCompatibility(t *testing.T) {
 	now := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
 
-	// Legacy token: only Accounts specified, MaxResources and AllowedResources omitted (MaxResources == 0)
+	// Legacy token: only Accounts specified, MaxResources and Resources omitted (MaxResources == 0)
 	legacyClaims := &Claims{
 		ID:        "lic_legacy_account_only",
 		Customer:  Customer{Name: "Legacy Enterprise Corp"},
@@ -1567,7 +1610,7 @@ func TestLegacyToken_BackwardCompatibility(t *testing.T) {
 		t.Errorf("expected GetMaxResources=0 for legacy token, got %d", GetMaxResources(legacyClaims))
 	}
 	if !IsResourceAllowed(legacyClaims, "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/123") {
-		t.Error("expected IsResourceAllowed=true for legacy token without AllowedResources")
+		t.Error("expected IsResourceAllowed=true for legacy token without Resources")
 	}
 
 	// Generate 50 resources from the authorized account
