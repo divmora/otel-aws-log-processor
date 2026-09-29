@@ -2,6 +2,7 @@ package license
 
 import (
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -218,7 +219,7 @@ func ResetDefaultValidator() {
 
 // DefaultFallbackClaims returns standard fallback claims for serverless degraded mode.
 func DefaultFallbackClaims() *Claims {
-	return liblicense.DefaultCommunityClaims("otel-aws-log-processor")
+	return DefaultCommunityClaims("otel-aws-log-processor")
 }
 
 // NewDefaultManagerConfig returns a ManagerConfig configured with PolicyDegraded and FallbackClaims
@@ -234,7 +235,7 @@ func NewDefaultManagerConfig(validator *liblicense.Validator) liblicense.Manager
 	return liblicense.ManagerConfig{
 		Validator:              validator,
 		Policy:                 liblicense.PolicyDegraded,
-		FallbackClaims:         DefaultFallbackClaims(),
+		FallbackClaims:         liblicense.DefaultCommunityClaims("otel-aws-log-processor"),
 		AllowDegradedMutations: true,
 	}
 }
@@ -344,6 +345,67 @@ func ParseAndVerifyWithCRLURL(token string, pubKey ed25519.PublicKey, evalTime t
 	return verifyWithValidator(token, validator, evalTime)
 }
 
+// Inspect decodes and returns the Claims from a raw or armored license string
+// without verifying the cryptographic signature. Useful for diagnosis, logging, and metadata inspection.
+func Inspect(rawLicense string) (*Claims, error) {
+	payloadJSON, _, _, err := liblicense.ParseToken(rawLicense)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := liblicense.ValidateClaimsPayloadJSON(payloadJSON); err != nil {
+		return nil, err
+	}
+
+	var claims Claims
+	if err := json.Unmarshal(payloadJSON, &claims); err != nil {
+		return nil, fmt.Errorf("%w: failed to parse claims json: %v", liblicense.ErrInvalidLicenseFormat, err)
+	}
+
+	if err := claims.ValidateClaimsSchema(); err != nil {
+		return nil, err
+	}
+
+	return &claims, nil
+}
+
+func claimsFromLibClaims(lc *liblicense.Claims) *Claims {
+	if lc == nil {
+		return nil
+	}
+	var lim *Limits
+	if lc.Limits != nil {
+		lim = &Limits{
+			MaxResources:        int(lc.Limits["max_resources"]),
+			MaxAccounts:         int(lc.Limits["max_accounts"]),
+			MaxMonthlyGB:        int(lc.Limits["max_monthly_gb"]),
+			MaxContainerRecords: lc.Limits["max_container_records"],
+			Raw:                 lc.Limits,
+		}
+	}
+	return &Claims{
+		ID:                   lc.ID,
+		KeyID:                lc.KeyID,
+		Customer:             Customer{Name: lc.Customer.Name, Email: lc.Customer.Email, OrgID: lc.Customer.OrgID},
+		Product:              lc.Product,
+		Plan:                 lc.Plan,
+		IssuedAt:             lc.IssuedAt,
+		NotBefore:            lc.NotBefore,
+		ExpiresAt:            lc.ExpiresAt,
+		GracePeriodDays:      lc.GracePeriodDays,
+		Features:             lc.Features,
+		Limits:               lim,
+		Scope:                lc.Scope,
+		Environment:          lc.Environment,
+		Fingerprint:          lc.Fingerprint,
+		MaxVersion:           lc.MaxVersion,
+		AllowedVersions:      lc.AllowedVersions,
+		MaintenanceExpiresAt: lc.MaintenanceExpiresAt,
+		CRLURL:               lc.CRLURL,
+		Metadata:             lc.Metadata,
+	}
+}
+
 // verifyWithValidator runs verification using a configured liblicense.Validator,
 // evaluating expiration, grace period dynamics, scope mismatches, and Certificate Revocation Lists.
 func verifyWithValidator(token string, validator *liblicense.Validator, evalTime time.Time) (*ValidationStatus, error) {
@@ -365,8 +427,8 @@ func verifyWithValidator(token string, validator *liblicense.Validator, evalTime
 		var scopeErr *liblicense.ScopeMismatchError
 		if errors.As(err, &scopeErr) {
 			// Token signature, product, and expiration are verified; scope is evaluated by Enforce against active targets.
-			claims, inspectErr := liblicense.Inspect(token)
-			if inspectErr == nil {
+			claims, inspectErr := Inspect(token)
+			if inspectErr == nil && claims != nil {
 				daysRemaining := claims.DaysRemainingAt(evalTime)
 				inGrace := claims.IsInGracePeriodAt(evalTime)
 				if inGrace {
@@ -396,7 +458,7 @@ func verifyWithValidator(token string, validator *liblicense.Validator, evalTime
 			}
 		}
 
-		claims, _ := liblicense.Inspect(token)
+		claims, _ := Inspect(token)
 		statusReason := "invalid"
 		if errors.Is(err, liblicense.ErrLicenseRevoked) {
 			statusReason = "revoked"
@@ -411,7 +473,12 @@ func verifyWithValidator(token string, validator *liblicense.Validator, evalTime
 		}, err
 	}
 
-	daysRemaining := res.Claims.DaysRemainingAt(evalTime)
+	claims, inspectErr := Inspect(token)
+	if inspectErr != nil && res.Claims != nil {
+		claims = claimsFromLibClaims(res.Claims)
+	}
+
+	daysRemaining := claims.DaysRemainingAt(evalTime)
 	if res.InGracePeriod {
 		daysRemaining = res.GraceDaysRemaining
 	}
@@ -421,8 +488,8 @@ func verifyWithValidator(token string, validator *liblicense.Validator, evalTime
 	if res.InGracePeriod {
 		statusReason = "grace_period"
 		msg = fmt.Sprintf("License expired on %s; currently operating within %d-day grace period (%d days remaining)",
-			res.Claims.ExpiresAt.Format("2006-01-02"), res.Claims.GracePeriodDays, res.GraceDaysRemaining)
-	} else if res.Claims.IsPerpetual() {
+			claims.ExpiresAt.Format("2006-01-02"), claims.GracePeriodDays, res.GraceDaysRemaining)
+	} else if claims.IsPerpetual() {
 		msg = "Perpetual commercial license is valid and active"
 	} else {
 		msg = fmt.Sprintf("License is valid and active (%d days remaining)", daysRemaining)
@@ -434,7 +501,7 @@ func verifyWithValidator(token string, validator *liblicense.Validator, evalTime
 		DaysRemaining: daysRemaining,
 		StatusReason:  statusReason,
 		Message:       msg,
-		Claims:        res.Claims,
+		Claims:        claims,
 	}, nil
 }
 

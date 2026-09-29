@@ -24,6 +24,11 @@ type CloudFrontProcessor struct {
 	MaxBatchSize  int
 	MaxConcurrent int
 	Parser        parser.LogParser[parser.CloudFrontLogEntry]
+	ByteTracker   ByteTracker
+}
+
+func (p *CloudFrontProcessor) SetByteTracker(bt ByteTracker) {
+	p.ByteTracker = bt
 }
 
 func (p *CloudFrontProcessor) Name() string {
@@ -56,7 +61,7 @@ func (p *CloudFrontProcessor) Process(ctx context.Context, logger *slog.Logger, 
 				AccountID:          accountID,
 				Region:             region,
 			}, nil
-		})
+		}, p.ByteTracker)
 	}
 
 	return ReadAndParseFromS3(ctx, logger, s3Client, bucket, key, p.MaxBatchSize, p.MaxConcurrent, func(line string) (LogAdapter, error) {
@@ -73,7 +78,7 @@ func (p *CloudFrontProcessor) Process(ctx context.Context, logger *slog.Logger, 
 			AccountID:          accountID,
 			Region:             region,
 		}, nil
-	})
+	}, p.ByteTracker)
 }
 
 // CloudFrontAdapter implementation

@@ -8,7 +8,9 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	eventsPkg "github.com/divmora/otel-aws-log-processor/pkg/events"
@@ -23,13 +25,38 @@ import (
 )
 
 var (
-	s3Client      *s3.Client
-	logger        *slog.Logger
-	maxConcurrent int
-	registry      *processor.Registry
-	otlpClient    *sender.OTLPClient
-	quotaTracker  *license.QuotaTracker
+	s3Client        *s3.Client
+	awsConfig       aws.Config
+	cwClients       = make(map[string]*cloudwatch.Client)
+	cwMu            sync.RWMutex
+	logger          *slog.Logger
+	maxConcurrent   int
+	registry        *processor.Registry
+	otlpClient      *sender.OTLPClient
+	quotaTracker    *license.QuotaTracker
+	resourceTracker *license.ResourceTracker
 )
+
+func getCloudWatchClient(targetRegion string) license.CloudWatchMetricAPI {
+	cwMu.RLock()
+	client, ok := cwClients[targetRegion]
+	cwMu.RUnlock()
+	if ok {
+		return client
+	}
+
+	cwMu.Lock()
+	defer cwMu.Unlock()
+	if client, ok := cwClients[targetRegion]; ok {
+		return client
+	}
+
+	client = cloudwatch.NewFromConfig(awsConfig, func(o *cloudwatch.Options) {
+		o.Region = targetRegion
+	})
+	cwClients[targetRegion] = client
+	return client
+}
 
 func init() {
 	// Initialize structured logger (JSON format)
@@ -37,11 +64,12 @@ func init() {
 	slog.SetDefault(logger)
 
 	// Initialize AWS SDK v2 configuration and S3 client
-	cfg, err := config.LoadDefaultConfig(context.Background())
+	var err error
+	awsConfig, err = config.LoadDefaultConfig(context.Background())
 	if err != nil {
 		logger.Error("Failed to load AWS SDK configuration", "error", err)
 	}
-	s3Client = s3.NewFromConfig(cfg)
+	s3Client = s3.NewFromConfig(awsConfig)
 
 	// Load configuration from environment
 	otlpEndpoint := utils.GetEnv("OTLP_HTTP_LOGS_ENDPOINT", "http://localhost:4318/v1/logs")
@@ -54,36 +82,45 @@ func init() {
 	// Initialize OTLP Client
 	otlpClient = sender.NewOTLPClient(otlpEndpoint, basicAuthUser, basicAuthPass, maxRetries, maxBatchSize, maxConcurrent, logger)
 
+	// Initialize Non-Production Quota Tracker & Metering Engine
+	quotaTracker = license.NewQuotaTracker()
+
+	// Initialize Container Resource Tracker
+	resourceTracker = license.NewResourceTracker()
+
 	// Initialize Registry
 	registry = processor.NewRegistry()
+	registry.SetByteTracker(quotaTracker)
 	registry.Register(&processor.ALBProcessor{
 		MaxBatchSize:  maxBatchSize,
 		MaxConcurrent: maxConcurrent,
 		Parser:        &parser.ALBParser{},
+		ByteTracker:   quotaTracker,
 	})
 	registry.Register(&processor.NLBProcessor{
 		MaxBatchSize:  maxBatchSize,
 		MaxConcurrent: maxConcurrent,
 		Parser:        &parser.NLBParser{},
+		ByteTracker:   quotaTracker,
 	})
 	registry.Register(&processor.CloudFrontProcessor{
 		MaxBatchSize:  maxBatchSize,
 		MaxConcurrent: maxConcurrent,
 		Parser:        &parser.CloudFrontParser{},
+		ByteTracker:   quotaTracker,
 	})
 	registry.Register(&processor.WAFProcessor{
 		MaxBatchSize:  maxBatchSize,
 		MaxConcurrent: maxConcurrent,
 		Parser:        &parser.WAFParser{},
+		ByteTracker:   quotaTracker,
 	})
-
-	// Initialize Non-Production Quota Tracker
-	quotaTracker = license.NewQuotaTracker()
 
 	// Initial license compliance check
 	env := license.DetectEnvironment()
 	initStatus, _ := license.Enforce(license.EnforcementOptions{
-		Environment: env,
+		Environment:  env,
+		QuotaTracker: quotaTracker,
 	})
 	if initStatus != nil {
 		logger.Info("License engine initialized", "status", initStatus.StatusReason, "environment", env, "message", initStatus.Message)
@@ -129,7 +166,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 			"caller_account", callerAccount,
 			"action", failureAction,
 		)
-		license.EmitCloudWatchEMF(preflightStatus, env, 0)
+		license.EmitCloudWatchEMF(preflightStatus, env, 0, resourceTracker.Count(), quotaTracker.TotalBytesProcessed())
 
 		if failureAction == "dlq" {
 			for _, rec := range sqsEvent.Records {
@@ -145,6 +182,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 	}
 
 	var allEntries []processor.LogAdapter
+	var processedKeys []string
 	var lastBucket string
 	featureSet := make(map[string]struct{})
 
@@ -172,6 +210,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 			// But ParseBodyAsS3 returns slice, so handle all
 			msgFailed := false
 			var recordEntries []processor.LogAdapter
+			var recordKeys []string
 			recordFeatures := make(map[string]struct{})
 
 			for _, s3Record := range s3Records {
@@ -205,6 +244,8 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 					break // Stop processing this SQS message, mark as failed
 				}
 
+				recordKeys = append(recordKeys, key)
+
 				if len(entries) > 0 {
 					recordEntries = append(recordEntries, entries...)
 					switch proc.Name() {
@@ -234,6 +275,9 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 			} else {
 				if len(recordEntries) > 0 {
 					allEntries = append(allEntries, recordEntries...)
+				}
+				if len(recordKeys) > 0 {
+					processedKeys = append(processedKeys, recordKeys...)
 				}
 				for feat := range recordFeatures {
 					featureSet[feat] = struct{}{}
@@ -273,17 +317,40 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 		exercisedFeatures = append(exercisedFeatures, feat)
 	}
 
+	// Extract source resource ARNs from parsed log records and S3 keys
+	sourceResourceMap := make(map[string]struct{})
+	for _, entry := range allEntries {
+		if arn, shortID := license.ExtractResourceFromAttributes(entry.GetResourceAttributes()); arn != "" {
+			sourceResourceMap[arn] = struct{}{}
+		} else if shortID != "" {
+			sourceResourceMap[shortID] = struct{}{}
+		}
+	}
+	for _, k := range processedKeys {
+		if arn, shortID := license.ExtractResourceFromS3Key(k); arn != "" {
+			sourceResourceMap[arn] = struct{}{}
+		} else if shortID != "" {
+			sourceResourceMap[shortID] = struct{}{}
+		}
+	}
+	var sourceResources []string
+	for res := range sourceResourceMap {
+		sourceResources = append(sourceResources, res)
+	}
+
 	// Evaluate license compliance
 	licStatus, err := license.Enforce(license.EnforcementOptions{
-		Context:           ctx,
-		Environment:       env,
-		CallerAccountID:   callerAccount,
-		SourceAccountIDs:  sourceAccounts,
-		ExercisedFeatures: exercisedFeatures,
-		BatchRecordCount:  len(allEntries),
-		QuotaTracker:      quotaTracker,
-		BucketName:        lastBucket,
-		AuthoritativeTime: authTime,
+		Context:            ctx,
+		Environment:        env,
+		CallerAccountID:    callerAccount,
+		SourceAccountIDs:   sourceAccounts,
+		SourceResourceARNs: sourceResources,
+		ExercisedFeatures:  exercisedFeatures,
+		BatchRecordCount:   len(allEntries),
+		QuotaTracker:       quotaTracker,
+		ResourceTracker:    resourceTracker,
+		BucketName:         lastBucket,
+		AuthoritativeTime:  authTime,
 	})
 	if err != nil {
 		if license.IsDeterministicLicenseError(err) {
@@ -293,7 +360,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 				"caller_account", callerAccount,
 				"action", failureAction,
 			)
-			license.EmitCloudWatchEMF(licStatus, env, len(allEntries))
+			license.EmitMetrics(ctx, getCloudWatchClient, licStatus, env, len(allEntries), resourceTracker.Count(), quotaTracker.TotalBytesProcessed(), sourceResources)
 
 			if failureAction == "dlq" {
 				for _, rec := range sqsEvent.Records {
@@ -322,8 +389,8 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 		}
 	}
 
-	// Emit CloudWatch EMF Metric (asynchronous stdout)
-	license.EmitCloudWatchEMF(licStatus, env, len(allEntries))
+	// Emit CloudWatch Metric (asynchronous stdout EMF + cross-region PutMetricData if applicable)
+	license.EmitMetrics(ctx, getCloudWatchClient, licStatus, env, len(allEntries), resourceTracker.Count(), quotaTracker.TotalBytesProcessed(), sourceResources)
 
 	logger.Info("Lambda execution completed", "failures", len(response.BatchItemFailures))
 	return response, nil

@@ -899,6 +899,22 @@ resource "aws_iam_policy" "lambda_policy" {
           "logs:PutLogEvents"
         ]
         Resource = "arn:aws:logs:*:*:*"
+      },
+      {
+        Sid    = "CloudWatchMetrics"
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = [
+              "Divmora/LogProcessor",
+              "Divmora/License"
+            ]
+          }
+        }
       }
     ]
   })
@@ -1006,6 +1022,17 @@ Resources:
             BucketName: "*"
         - SQSPollerPolicy:
             QueueName: !GetAtt LogIngestionQueue.QueueName
+        - Statement:
+            - Sid: CloudWatchMetrics
+              Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  cloudwatch:namespace:
+                    - Divmora/LogProcessor
+                    - Divmora/License
       Events:
         SQSEvent:
           Type: SQS
@@ -1156,6 +1183,22 @@ aws lambda create-function \
         "logs:PutLogEvents"
       ],
       "Resource": "arn:aws:logs:*:*:*"
+    },
+    {
+      "Sid": "CloudWatchMetrics",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:PutMetricData"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "cloudwatch:namespace": [
+            "Divmora/LogProcessor",
+            "Divmora/License"
+          ]
+        }
+      }
     }
   ]
 }</code></pre>
@@ -1652,6 +1695,32 @@ otlp_config:
             <div class="p-3 rounded-xl bg-dark-bg border border-dark-border text-xs text-slate-400 space-y-1">
               <div class="text-slate-200 font-semibold font-mono">Change Date Conversion:</div>
               <div>Converts automatically to <span class="text-brand-300 font-semibold">Apache License 2.0</span> exactly 3 years from release.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Monitored Resource Packs Card -->
+        <div class="p-5 rounded-2xl bg-dark-card border border-brand-500/30 space-y-3">
+          <div class="flex items-center justify-between">
+            <span class="px-2.5 py-1 rounded-full bg-brand-500/10 text-brand-400 border border-brand-500/20 text-xs font-semibold">Decoupled from AWS Accounts</span>
+            <i class="fa-solid fa-boxes-stacked text-brand-400 text-lg"></i>
+          </div>
+          <h3 class="text-base font-bold text-white">Monitored Resource Packs</h3>
+          <p class="text-xs text-slate-300 leading-relaxed">
+            Commercial charging is decoupled from raw AWS Account counts to eliminate price penalties on multi-spoke landing zones (e.g., 25 spoke accounts with 1 ALB each). Workloads are billed by active monitored resources (ALBs, NLBs, CloudFront distributions, and WAF WebACLs).
+          </p>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1 text-xs">
+            <div class="p-2.5 rounded-lg bg-dark-bg border border-dark-border">
+              <span class="text-brand-400 font-mono font-semibold">Community</span>
+              <p class="text-[11px] text-slate-400">Up to 5 resources, 50 GB/mo throughput, $0/mo.</p>
+            </div>
+            <div class="p-2.5 rounded-lg bg-dark-bg border border-dark-border">
+              <span class="text-brand-400 font-mono font-semibold">Pro Resource Pack</span>
+              <p class="text-[11px] text-slate-400">Up to 25 resources, 10 TB/mo throughput, 3 accounts, $50/res/mo.</p>
+            </div>
+            <div class="p-2.5 rounded-lg bg-dark-bg border border-dark-border">
+              <span class="text-brand-400 font-mono font-semibold">Enterprise Fleet</span>
+              <p class="text-[11px] text-slate-400">50+ resources, 50 TB/mo throughput, 10+ accounts / AWS Org.</p>
             </div>
           </div>
         </div>

@@ -117,6 +117,22 @@ Deploy the Lambda function with the following least-privilege IAM policy:
         "logs:PutLogEvents"
       ],
       "Resource": "arn:aws:logs:*:*:*"
+    },
+    {
+      "Sid": "CloudWatchMetrics",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:PutMetricData"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "cloudwatch:namespace": [
+            "Divmora/LogProcessor",
+            "Divmora/License"
+          ]
+        }
+      }
     }
   ]
 }
@@ -231,6 +247,18 @@ export DIVMORA_LICENSE_KEY="DIV1.<payload>.<signature>"
 ```
 
 Alternatively, mount a license file and point to its location using `DIVMORA_LICENSE_FILE=/path/to/license.key`.
+
+### Monitored Resource Packs & Multi-Account Scoping
+
+Commercial licenses decouple charging units from raw AWS account counts, using **Monitored Resource Packs** (ALBs, NLBs, CloudFront distributions, AWS WAF WebACLs). This eliminates the cost penalty of modern multi-account landing zones (e.g., 25 spoke accounts with 1 ALB each):
+
+- **`claims.Limits.MaxMonthlyGB`**: Fair-use monthly throughput ceiling in Gigabytes (e.g., 10,000 GB on Pro, 50,000 GB on Enterprise). Enforcement is 100% non-blocking (zero logs dropped), emitting rate-limited warnings and telemetry for contractual true-ups.
+- **`claims.Limits.MaxResources`**: Maximum unique monitored resources allowed per container lifecycle (e.g., 25 on Pro, 50+ on Enterprise). Legacy tokens (`max_resources == 0`) remain uncapped for full backward compatibility.
+- **`claims.Scope.Resources`**: Optional list of allowed ARNs, wildcard glob patterns (`arn:aws:elasticloadbalancing:*:*:loadbalancer/app/*`), or short resource IDs (e.g., CloudFront distribution IDs).
+- **`claims.Limits.MaxAccounts`**: Maximum number of spoke AWS Accounts permitted.
+- **In-Memory Tracking**: Thread-safe `ResourceTracker` and lock-free `QuotaTracker` deduplicate active resources and meter uncompressed stream bytes with `<0.5%` CPU overhead.
+- **CloudWatch EMF & Cross-Region Metrics**: Emits `BytesProcessed` (Bytes) and `ActiveMonitoredResources` gauges alongside `RecordsProcessed` and `LicenseViolations` under `Divmora/LogProcessor` and `Divmora/License` namespaces for real-time FinOps monitoring.
+- **Centralized Multi-Region Aggregation**: Metrics automatically aggregate into the central region specified in the signed license metadata (`claims.Metadata["metrics_region"]`, defaulting to `us-east-1`), enabling single-pane FinOps monitoring across all regional Lambda deployments without manual environment variable configuration.
 
 ### Production Enforcement Modes
 

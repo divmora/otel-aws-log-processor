@@ -1,6 +1,7 @@
 package license
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -11,9 +12,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	liblicense "github.com/divmora/license-go/pkg/license"
 	"github.com/divmora/otel-aws-log-processor/pkg/model"
 )
@@ -1212,3 +1215,1350 @@ func TestPreflightEnforce(t *testing.T) {
 		t.Fatalf("expected valid token to pass preflight: %v", err)
 	}
 }
+
+func TestResources_PatternMatching(t *testing.T) {
+	tests := []struct {
+		name        string
+		pattern     string
+		resourceARN string
+		wantMatch   bool
+	}{
+		{
+			name:        "ExactMatch",
+			pattern:     "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/50dc6c495c0c9188",
+			resourceARN: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/50dc6c495c0c9188",
+			wantMatch:   true,
+		},
+		{
+			name:        "CaseInsensitiveMatch",
+			pattern:     "arn:aws:elasticloadbalancing:US-EAST-1:123456789012:loadbalancer/app/my-alb/50dc6c495c0c9188",
+			resourceARN: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/50dc6c495c0c9188",
+			wantMatch:   true,
+		},
+		{
+			name:        "WildcardAccountAndName",
+			pattern:     "arn:aws:elasticloadbalancing:us-east-1:*:loadbalancer/app/*",
+			resourceARN: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/prod-checkout/50dc6c495c0c9188",
+			wantMatch:   true,
+		},
+		{
+			name:        "WildcardRegionMismatch",
+			pattern:     "arn:aws:elasticloadbalancing:us-west-2:*:loadbalancer/app/*",
+			resourceARN: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/prod-checkout/50dc6c495c0c9188",
+			wantMatch:   false,
+		},
+		{
+			name:        "WildcardTypeMismatch_NLB_vs_ALB",
+			pattern:     "arn:aws:elasticloadbalancing:us-east-1:*:loadbalancer/app/*",
+			resourceARN: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/prod-nlb/50dc6c495c0c9188",
+			wantMatch:   false,
+		},
+		{
+			name:        "ShortIDPatternAgainstFullARN",
+			pattern:     "app/prod-checkout/*",
+			resourceARN: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/prod-checkout/50dc6c495c0c9188",
+			wantMatch:   true,
+		},
+		{
+			name:        "ShortIDPatternAgainstShortID",
+			pattern:     "app/prod-checkout/*",
+			resourceARN: "app/prod-checkout/50dc6c495c0c9188",
+			wantMatch:   true,
+		},
+		{
+			name:        "CloudFrontDistributionID_Exact",
+			pattern:     "EDFDVBD632BHFR5",
+			resourceARN: "arn:aws:cloudfront::123456789012:distribution/EDFDVBD632BHFR5",
+			wantMatch:   true,
+		},
+		{
+			name:        "CloudFrontDistributionID_ShortTarget",
+			pattern:     "EDFDVBD632BHFR5",
+			resourceARN: "EDFDVBD632BHFR5",
+			wantMatch:   true,
+		},
+		{
+			name:        "CloudFrontDistributionID_Mismatch",
+			pattern:     "EDFDVBD632BHFR5",
+			resourceARN: "arn:aws:cloudfront::123456789012:distribution/OTHERDIST12345",
+			wantMatch:   false,
+		},
+		{
+			name:        "CloudFrontWildcardARN",
+			pattern:     "arn:aws:cloudfront:*:*:distribution/EDFD*",
+			resourceARN: "arn:aws:cloudfront::123456789012:distribution/EDFDVBD632BHFR5",
+			wantMatch:   true,
+		},
+		{
+			name:        "WAFWebACL_RegionalWildcard",
+			pattern:     "arn:aws:wafv2:us-east-1:*:regional/webacl/*",
+			resourceARN: "arn:aws:wafv2:us-east-1:123456789012:regional/webacl/prod-waf/a1b2c3d4",
+			wantMatch:   true,
+		},
+		{
+			name:        "WAFWebACL_GlobalVsRegionalMismatch",
+			pattern:     "arn:aws:wafv2:us-east-1:*:regional/webacl/*",
+			resourceARN: "arn:aws:wafv2::123456789012:global/webacl/prod-waf/a1b2c3d4",
+			wantMatch:   false,
+		},
+		{
+			name:        "UniversalWildcard",
+			pattern:     "*",
+			resourceARN: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/any-alb/123",
+			wantMatch:   true,
+		},
+		{
+			name:        "UniversalAllKeyword",
+			pattern:     "all",
+			resourceARN: "arn:aws:cloudfront::123456789012:distribution/EDFDVBD632BHFR5",
+			wantMatch:   true,
+		},
+		{
+			name:        "EmptyPattern",
+			pattern:     "",
+			resourceARN: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/any-alb/123",
+			wantMatch:   false,
+		},
+		{
+			name:        "EmptyResource",
+			pattern:     "*",
+			resourceARN: "",
+			wantMatch:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := MatchResourcePattern(tt.pattern, tt.resourceARN)
+			if got != tt.wantMatch {
+				t.Errorf("MatchResourcePattern(%q, %q) = %v; want %v", tt.pattern, tt.resourceARN, got, tt.wantMatch)
+			}
+		})
+	}
+}
+
+func TestScope_ResourcesSerializationAndAccessors(t *testing.T) {
+	scopeJSON := `{"accounts":["123456789012"],"resources":["arn:aws:elasticloadbalancing:us-east-1:*:loadbalancer/app/*","EDFDVBD632BHFR5"]}`
+	var s Scope
+	if err := json.Unmarshal([]byte(scopeJSON), &s); err != nil {
+		t.Fatalf("failed to unmarshal Scope: %v", err)
+	}
+
+	if len(s.Resources) != 2 {
+		t.Fatalf("expected 2 resources, got %d", len(s.Resources))
+	}
+	if s.Resources[0] != "arn:aws:elasticloadbalancing:us-east-1:*:loadbalancer/app/*" {
+		t.Errorf("unexpected resource[0]: %s", s.Resources[0])
+	}
+	if s.Resources[1] != "EDFDVBD632BHFR5" {
+		t.Errorf("unexpected resource[1]: %s", s.Resources[1])
+	}
+
+	marshaled, err := json.Marshal(&s)
+	if err != nil {
+		t.Fatalf("failed to marshal Scope: %v", err)
+	}
+	if !strings.Contains(string(marshaled), `"resources":`) {
+		t.Errorf("marshaled json missing 'resources': %s", string(marshaled))
+	}
+	if strings.Contains(string(marshaled), `"allowed_resources":`) {
+		t.Errorf("marshaled json should not contain 'allowed_resources': %s", string(marshaled))
+	}
+
+	claims := &Claims{
+		Limits: &Limits{MaxResources: 2},
+		Scope:  &s,
+	}
+	res := GetResources(claims)
+	if len(res) != 2 {
+		t.Fatalf("expected GetResources to return 2 items, got %d", len(res))
+	}
+	if !claims.IsResourceAllowed("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/1") {
+		t.Error("expected ALB ARN to be allowed")
+	}
+	if claims.IsResourceAllowed("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/my-nlb/1") {
+		t.Error("expected NLB ARN to be disallowed")
+	}
+
+	// Verify AssertResource method
+	if err := claims.AssertResource("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/1"); err != nil {
+		t.Errorf("expected AssertResource to succeed, got %v", err)
+	}
+	errNotAllowed := claims.AssertResource("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/my-nlb/1")
+	if errNotAllowed == nil {
+		t.Error("expected AssertResource to fail for unauthorized resource")
+	}
+	if !errors.Is(errNotAllowed, ErrResourceNotAllowed) {
+		t.Errorf("expected errors.Is(errNotAllowed, ErrResourceNotAllowed)=true, got false")
+	}
+	if !errors.Is(errNotAllowed, liblicense.ErrScopeMismatch) {
+		t.Errorf("expected errors.Is(errNotAllowed, liblicense.ErrScopeMismatch)=true, got false")
+	}
+	var resErr *ResourceNotAllowedError
+	if !errors.As(errNotAllowed, &resErr) {
+		t.Errorf("expected errors.As to populate *ResourceNotAllowedError")
+	}
+
+	// Verify CheckResourceLimit method
+	if err := claims.CheckResourceLimit(2); err != nil {
+		t.Errorf("expected CheckResourceLimit(2) to succeed for max 2, got %v", err)
+	}
+	errQuota := claims.CheckResourceLimit(3)
+	if errQuota == nil {
+		t.Error("expected CheckResourceLimit(3) to fail for max 2")
+	}
+	if !errors.Is(errQuota, ErrResourceQuotaExceeded) {
+		t.Errorf("expected errors.Is(errQuota, ErrResourceQuotaExceeded)=true, got false")
+	}
+	if !errors.Is(errQuota, liblicense.ErrLimitExceeded) {
+		t.Errorf("expected errors.Is(errQuota, liblicense.ErrLimitExceeded)=true, got false")
+	}
+	var quotaErr *ResourceQuotaExceededError
+	if !errors.As(errQuota, &quotaErr) {
+		t.Errorf("expected errors.As to populate *ResourceQuotaExceededError")
+	}
+
+	// Verify legacy unmarshaling from "allowed_resources"
+	legacyJSON := `{"accounts":["123456789012"],"allowed_resources":["arn:aws:elasticloadbalancing:us-east-1:*:loadbalancer/app/*"]}`
+	var sLegacy Scope
+	if err := json.Unmarshal([]byte(legacyJSON), &sLegacy); err != nil {
+		t.Fatalf("failed to unmarshal legacy Scope: %v", err)
+	}
+	if len(sLegacy.Resources) != 1 || sLegacy.Resources[0] != "arn:aws:elasticloadbalancing:us-east-1:*:loadbalancer/app/*" {
+		t.Errorf("expected legacy allowed_resources to populate Resources, got %v", sLegacy.Resources)
+	}
+}
+
+func TestResourceQuota_StrictAndWarn(t *testing.T) {
+	now := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+	claims := &Claims{
+		ID:        "lic_quota_test",
+		Customer:  Customer{Name: "Quota Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierPro,
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+		Limits: &Limits{
+			MaxResources: 2,
+		},
+		Scope: &Scope{
+			Accounts:  []string{"123456789012"},
+			Resources: []string{"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/*"},
+		},
+	}
+	token := signTestToken(claims, testPrivKey)
+
+	alb1 := "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/alb-1/111"
+	alb2 := "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/alb-2/222"
+	alb3 := "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/alb-3/333"
+	unauthorizedNLB := "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/nlb-1/999"
+
+	// 1. Within quota (2 resources, max 2) in strict mode -> Valid
+	t.Run("WithinQuota_Strict", func(t *testing.T) {
+		tracker := NewResourceTracker()
+		status, err := Enforce(EnforcementOptions{
+			Environment:        "production",
+			EnforcementMode:    "strict",
+			LicenseKey:         token,
+			CallerAccountID:    "123456789012",
+			SourceResourceARNs: []string{alb1, alb2},
+			ResourceTracker:    tracker,
+			PublicKey:          testPubKey,
+			EvaluationTime:     now,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error within quota: %v", err)
+		}
+		if !status.Valid {
+			t.Errorf("expected status to be valid, got reason %s", status.StatusReason)
+		}
+		if tracker.Count() != 2 {
+			t.Errorf("expected tracker count 2, got %d", tracker.Count())
+		}
+	})
+
+	// 2. Quota breach in warn mode (3 resources, max 2) -> Soft warning, valid = false, err = nil
+	t.Run("QuotaBreach_Warn", func(t *testing.T) {
+		tracker := NewResourceTracker()
+		status, err := Enforce(EnforcementOptions{
+			Environment:        "production",
+			EnforcementMode:    "warn",
+			LicenseKey:         token,
+			CallerAccountID:    "123456789012",
+			SourceResourceARNs: []string{alb1, alb2, alb3},
+			ResourceTracker:    tracker,
+			PublicKey:          testPubKey,
+			EvaluationTime:     now,
+		})
+		if err != nil {
+			t.Fatalf("expected nil error in warn mode, got: %v", err)
+		}
+		if status == nil || status.Valid {
+			t.Fatal("expected status.Valid to be false on quota breach")
+		}
+		if status.StatusReason != "resource_quota_exceeded" {
+			t.Errorf("got status reason %s, want resource_quota_exceeded", status.StatusReason)
+		}
+		if tracker.Count() != 3 {
+			t.Errorf("expected tracker count 3, got %d", tracker.Count())
+		}
+	})
+
+	// 3. Quota breach in strict mode (3 resources, max 2) -> Structured error wrapping ErrResourceQuotaExceeded
+	t.Run("QuotaBreach_Strict", func(t *testing.T) {
+		tracker := NewResourceTracker()
+		status, err := Enforce(EnforcementOptions{
+			Environment:        "production",
+			EnforcementMode:    "strict",
+			LicenseKey:         token,
+			CallerAccountID:    "123456789012",
+			SourceResourceARNs: []string{alb1, alb2, alb3},
+			ResourceTracker:    tracker,
+			PublicKey:          testPubKey,
+			EvaluationTime:     now,
+		})
+		if err == nil {
+			t.Fatal("expected error on quota breach in strict mode")
+		}
+		if !errors.Is(err, ErrResourceQuotaExceeded) {
+			t.Errorf("expected error to wrap ErrResourceQuotaExceeded, got: %v", err)
+		}
+		if !IsDeterministicLicenseError(err) {
+			t.Errorf("expected IsDeterministicLicenseError to return true, got: %v", err)
+		}
+		if status != nil && status.Valid {
+			t.Error("expected status.Valid to be false")
+		}
+	})
+
+	// 4. Unauthorized resource in warn mode -> StatusReason = resource_not_allowed, err = nil
+	t.Run("UnauthorizedResource_Warn", func(t *testing.T) {
+		tracker := NewResourceTracker()
+		status, err := Enforce(EnforcementOptions{
+			Environment:        "production",
+			EnforcementMode:    "warn",
+			LicenseKey:         token,
+			CallerAccountID:    "123456789012",
+			SourceResourceARNs: []string{unauthorizedNLB},
+			ResourceTracker:    tracker,
+			PublicKey:          testPubKey,
+			EvaluationTime:     now,
+		})
+		if err != nil {
+			t.Fatalf("expected nil error in warn mode for unauthorized resource, got: %v", err)
+		}
+		if status == nil || status.Valid {
+			t.Fatal("expected status.Valid to be false for unauthorized resource")
+		}
+		if status.StatusReason != "resource_not_allowed" {
+			t.Errorf("got status reason %s, want resource_not_allowed", status.StatusReason)
+		}
+	})
+
+	// 5. Unauthorized resource in strict mode -> Structured error wrapping ErrResourceNotAllowed
+	t.Run("UnauthorizedResource_Strict", func(t *testing.T) {
+		tracker := NewResourceTracker()
+		status, err := Enforce(EnforcementOptions{
+			Environment:        "production",
+			EnforcementMode:    "strict",
+			LicenseKey:         token,
+			CallerAccountID:    "123456789012",
+			SourceResourceARNs: []string{unauthorizedNLB},
+			ResourceTracker:    tracker,
+			PublicKey:          testPubKey,
+			EvaluationTime:     now,
+		})
+		if err == nil {
+			t.Fatal("expected error for unauthorized resource in strict mode")
+		}
+		if !errors.Is(err, ErrResourceNotAllowed) {
+			t.Errorf("expected error to wrap ErrResourceNotAllowed, got: %v", err)
+		}
+		if !IsDeterministicLicenseError(err) {
+			t.Errorf("expected IsDeterministicLicenseError to return true, got: %v", err)
+		}
+		if status != nil && status.Valid {
+			t.Error("expected status.Valid to be false")
+		}
+	})
+}
+
+func TestResourceTracker_LifecycleAndConcurrency(t *testing.T) {
+	tracker := NewResourceTracker()
+	if tracker.Count() != 0 {
+		t.Errorf("expected initial count 0, got %d", tracker.Count())
+	}
+
+	// 1. Basic tracking & deduplication
+	count, isNew := tracker.Track("res-1")
+	if !isNew || count != 1 {
+		t.Errorf("expected isNew=true, count=1; got isNew=%v, count=%d", isNew, count)
+	}
+
+	// Repeat same resource
+	count, isNew = tracker.Track("res-1")
+	if isNew || count != 1 {
+		t.Errorf("expected isNew=false, count=1 on duplicate; got isNew=%v, count=%d", isNew, count)
+	}
+
+	// Add second resource
+	count, isNew = tracker.Track("res-2")
+	if !isNew || count != 2 {
+		t.Errorf("expected isNew=true, count=2; got isNew=%v, count=%d", isNew, count)
+	}
+
+	if tracker.Count() != 2 {
+		t.Errorf("expected Count()=2, got %d", tracker.Count())
+	}
+
+	resources := tracker.Resources()
+	if len(resources) != 2 {
+		t.Errorf("expected 2 resources, got %d", len(resources))
+	}
+
+	// 2. High-concurrency tracking with race detector
+	tracker.Reset()
+	var wg sync.WaitGroup
+	workers := 50
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			resID := fmt.Sprintf("resource-%d", workerID%10) // 10 unique resources across 50 workers
+			tracker.Track(resID)
+			tracker.Count()
+			tracker.Resources()
+		}(i)
+	}
+	wg.Wait()
+
+	if tracker.Count() != 10 {
+		t.Errorf("expected 10 unique resources after concurrent tracking, got %d", tracker.Count())
+	}
+}
+
+func TestLegacyToken_BackwardCompatibility(t *testing.T) {
+	now := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+
+	// Legacy token: only Accounts specified, MaxResources and Resources omitted (MaxResources == 0)
+	legacyClaims := &Claims{
+		ID:        "lic_legacy_account_only",
+		Customer:  Customer{Name: "Legacy Enterprise Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierEnterprise,
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+		Scope: &Scope{
+			Accounts: []string{"123456789012"},
+		},
+	}
+	token := signTestToken(legacyClaims, testPrivKey)
+
+	// Verify helper accessors
+	if GetMaxResources(legacyClaims) != 0 {
+		t.Errorf("expected GetMaxResources=0 for legacy token, got %d", GetMaxResources(legacyClaims))
+	}
+	if !IsResourceAllowed(legacyClaims, "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/123") {
+		t.Error("expected IsResourceAllowed=true for legacy token without Resources")
+	}
+
+	// Generate 50 resources from the authorized account
+	var manyResources []string
+	for i := 0; i < 50; i++ {
+		manyResources = append(manyResources, fmt.Sprintf("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/alb-%d/hash", i))
+	}
+
+	tracker := NewResourceTracker()
+	status, err := Enforce(EnforcementOptions{
+		Environment:        "production",
+		EnforcementMode:    "strict",
+		LicenseKey:         token,
+		CallerAccountID:    "123456789012",
+		SourceResourceARNs: manyResources,
+		ResourceTracker:    tracker,
+		PublicKey:          testPubKey,
+		EvaluationTime:     now,
+	})
+	if err != nil {
+		t.Fatalf("expected legacy token with MaxResources=0 to be uncapped without error, got: %v", err)
+	}
+	if !status.Valid {
+		t.Errorf("expected status to be valid for legacy token, got reason %s", status.StatusReason)
+	}
+	if tracker.Count() != 50 {
+		t.Errorf("expected tracker to count 50 resources, got %d", tracker.Count())
+	}
+}
+
+func TestMultiAccountSpokeSetup_ResourceQuota(t *testing.T) {
+	now := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+
+	// Enterprise license with MaxResources=25, uncapped accounts
+	claims := &Claims{
+		ID:        "lic_landing_zone_test",
+		Customer:  Customer{Name: "FinOps Cloud Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierEnterprise,
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+		Limits: &Limits{
+			MaxResources: 25,
+		},
+		Scope: &Scope{},
+	}
+	token := signTestToken(claims, testPrivKey)
+
+	// Simulate 25 spoke accounts, each running 1 ALB
+	var spokeAccounts []string
+	var spokeResources []string
+	for i := 1; i <= 25; i++ {
+		acct := fmt.Sprintf("%012d", i)
+		spokeAccounts = append(spokeAccounts, acct)
+		spokeResources = append(spokeResources, fmt.Sprintf("arn:aws:elasticloadbalancing:us-east-1:%s:loadbalancer/app/spoke-%d/hash", acct, i))
+	}
+
+	tracker := NewResourceTracker()
+	status, err := Enforce(EnforcementOptions{
+		Environment:        "production",
+		EnforcementMode:    "strict",
+		LicenseKey:         token,
+		CallerAccountID:    "999999999999", // Central logging account
+		SourceAccountIDs:   spokeAccounts,
+		SourceResourceARNs: spokeResources,
+		ResourceTracker:    tracker,
+		PublicKey:          testPubKey,
+		EvaluationTime:     now,
+	})
+	if err != nil {
+		t.Fatalf("expected 25 spoke accounts with 1 ALB each to succeed under MaxResources=25: %v", err)
+	}
+	if !status.Valid {
+		t.Errorf("expected valid status, got %s", status.StatusReason)
+	}
+	if tracker.Count() != 25 {
+		t.Errorf("expected 25 active tracked resources, got %d", tracker.Count())
+	}
+
+	// Now add a 26th spoke account and resource -> exceeds MaxResources: 25
+	acct26 := fmt.Sprintf("%012d", 26)
+	res26 := fmt.Sprintf("arn:aws:elasticloadbalancing:us-east-1:%s:loadbalancer/app/spoke-26/hash", acct26)
+
+	_, errBreach := Enforce(EnforcementOptions{
+		Environment:        "production",
+		EnforcementMode:    "strict",
+		LicenseKey:         token,
+		CallerAccountID:    "999999999999",
+		SourceAccountIDs:   []string{acct26},
+		SourceResourceARNs: []string{res26},
+		ResourceTracker:    tracker,
+		PublicKey:          testPubKey,
+		EvaluationTime:     now,
+	})
+	if errBreach == nil {
+		t.Fatal("expected quota breach error when 26th resource is added to MaxResources=25")
+	}
+	if !errors.Is(errBreach, ErrResourceQuotaExceeded) {
+		t.Errorf("expected ErrResourceQuotaExceeded, got: %v", errBreach)
+	}
+}
+
+func TestSingleAccountLargeResourceBreach(t *testing.T) {
+	now := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+
+	// Pro license with MaxResources: 25 in single account
+	claims := &Claims{
+		ID:        "lic_single_acct_test",
+		Customer:  Customer{Name: "Monolithic Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierPro,
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+		Limits: &Limits{
+			MaxResources: 25,
+		},
+		Scope: &Scope{
+			Accounts: []string{"123456789012"},
+		},
+	}
+	token := signTestToken(claims, testPrivKey)
+
+	// Single account running 30 ALBs
+	var albResources []string
+	for i := 1; i <= 30; i++ {
+		albResources = append(albResources, fmt.Sprintf("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/alb-%d/hash", i))
+	}
+
+	// 1. Strict mode fails with structured deterministic error
+	trackerStrict := NewResourceTracker()
+	statusStrict, errStrict := Enforce(EnforcementOptions{
+		Environment:        "production",
+		EnforcementMode:    "strict",
+		LicenseKey:         token,
+		CallerAccountID:    "123456789012",
+		SourceResourceARNs: albResources,
+		ResourceTracker:    trackerStrict,
+		PublicKey:          testPubKey,
+		EvaluationTime:     now,
+	})
+	if errStrict == nil {
+		t.Fatal("expected error in strict mode when single account runs 30 ALBs under MaxResources=25")
+	}
+	if !errors.Is(errStrict, ErrResourceQuotaExceeded) {
+		t.Errorf("expected ErrResourceQuotaExceeded, got: %v", errStrict)
+	}
+	if !IsDeterministicLicenseError(errStrict) {
+		t.Errorf("expected IsDeterministicLicenseError to be true, got: %v", errStrict)
+	}
+	if statusStrict != nil && statusStrict.Valid {
+		t.Error("expected statusStrict.Valid to be false")
+	}
+
+	// 2. Warn mode logs warning without dropping traffic
+	trackerWarn := NewResourceTracker()
+	statusWarn, errWarn := Enforce(EnforcementOptions{
+		Environment:        "production",
+		EnforcementMode:    "warn",
+		LicenseKey:         token,
+		CallerAccountID:    "123456789012",
+		SourceResourceARNs: albResources,
+		ResourceTracker:    trackerWarn,
+		PublicKey:          testPubKey,
+		EvaluationTime:     now,
+	})
+	if errWarn != nil {
+		t.Fatalf("expected nil error in warn mode, got: %v", errWarn)
+	}
+	if statusWarn == nil || statusWarn.Valid {
+		t.Fatal("expected statusWarn.Valid to be false")
+	}
+	if statusWarn.StatusReason != "resource_quota_exceeded" {
+		t.Errorf("got status reason %s, want resource_quota_exceeded", statusWarn.StatusReason)
+	}
+}
+
+func TestResourceExtractionHelpers(t *testing.T) {
+	// 1. ALB Attributes
+	albAttrs := []model.OTelAttribute{
+		{Key: "aws.lb.name", Value: model.StringValue("app/my-alb/50dc6c495c0c9188")},
+		{Key: "cloud.region", Value: model.StringValue("us-east-1")},
+		{Key: "cloud.account.id", Value: model.StringValue("123456789012")},
+	}
+	arn, shortID := ExtractResourceFromAttributes(albAttrs)
+	if arn != "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/50dc6c495c0c9188" {
+		t.Errorf("got ALB ARN %s", arn)
+	}
+	if shortID != "app/my-alb/50dc6c495c0c9188" {
+		t.Errorf("got ALB shortID %s", shortID)
+	}
+
+	// 2. NLB Attributes
+	nlbAttrs := []model.OTelAttribute{
+		{Key: "aws.lb.name", Value: model.StringValue("net/my-nlb/1234567890abcdef")},
+		{Key: "cloud.region", Value: model.StringValue("eu-west-1")},
+		{Key: "cloud.account.id", Value: model.StringValue("987654321098")},
+	}
+	arnNLB, shortIDNLB := ExtractResourceFromAttributes(nlbAttrs)
+	if arnNLB != "arn:aws:elasticloadbalancing:eu-west-1:987654321098:loadbalancer/net/my-nlb/1234567890abcdef" {
+		t.Errorf("got NLB ARN %s", arnNLB)
+	}
+	if shortIDNLB != "net/my-nlb/1234567890abcdef" {
+		t.Errorf("got NLB shortID %s", shortIDNLB)
+	}
+
+	// 3. CloudFront Attributes
+	cfAttrs := []model.OTelAttribute{
+		{Key: "aws.cloudfront.distribution_id", Value: model.StringValue("EDFDVBD632BHFR5")},
+		{Key: "cloud.account.id", Value: model.StringValue("123456789012")},
+	}
+	arnCF, shortIDCF := ExtractResourceFromAttributes(cfAttrs)
+	if arnCF != "arn:aws:cloudfront::123456789012:distribution/EDFDVBD632BHFR5" {
+		t.Errorf("got CloudFront ARN %s", arnCF)
+	}
+	if shortIDCF != "EDFDVBD632BHFR5" {
+		t.Errorf("got CloudFront shortID %s", shortIDCF)
+	}
+
+	// 4. WAF Attributes
+	wafAttrs := []model.OTelAttribute{
+		{Key: "aws.waf.web_acl_id", Value: model.StringValue("arn:aws:wafv2:us-east-1:123456789012:regional/webacl/my-waf/uuid")},
+	}
+	arnWAF, shortIDWAF := ExtractResourceFromAttributes(wafAttrs)
+	if arnWAF != "arn:aws:wafv2:us-east-1:123456789012:regional/webacl/my-waf/uuid" {
+		t.Errorf("got WAF ARN %s", arnWAF)
+	}
+	if shortIDWAF != "arn:aws:wafv2:us-east-1:123456789012:regional/webacl/my-waf/uuid" {
+		t.Errorf("got WAF shortID %s", shortIDWAF)
+	}
+
+	// 5. ALB S3 Key
+	albKey := "prefix/AWSLogs/123456789012/elasticloadbalancing/us-east-1/2026/09/20/123456789012_elasticloadbalancing_us-east-1_app.my-alb.50dc6c495c0c9188_20260920T0000Z_1.2.3.4_hash.log.gz"
+	albKeyARN, albKeyShort := ExtractResourceFromS3Key(albKey)
+	if albKeyARN != "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/50dc6c495c0c9188" {
+		t.Errorf("got ALB S3 Key ARN %s", albKeyARN)
+	}
+	if albKeyShort != "app/my-alb/50dc6c495c0c9188" {
+		t.Errorf("got ALB S3 Key shortID %s", albKeyShort)
+	}
+
+	// 6. CloudFront Gzip S3 Key
+	cfKey := "AWSLogs/123456789012/CloudFront/EDFDVBD632BHFR5.2026-09-20-12.d111111abcdef8.gz"
+	cfKeyARN, cfKeyShort := ExtractResourceFromS3Key(cfKey)
+	if cfKeyARN != "arn:aws:cloudfront::123456789012:distribution/EDFDVBD632BHFR5" {
+		t.Errorf("got CloudFront S3 Key ARN %s", cfKeyARN)
+	}
+	if cfKeyShort != "EDFDVBD632BHFR5" {
+		t.Errorf("got CloudFront S3 Key shortID %s", cfKeyShort)
+	}
+
+	// 7. CloudFront Parquet S3 Key
+	cfParquetKey := "AWSLogs/123456789012/CloudFront/EDFDVBD632BHFR5/2026/09/20/12/EDFDVBD632BHFR5.2026-09-20-12.d111111abcdef8.parquet"
+	cfPKeyARN, cfPKeyShort := ExtractResourceFromS3Key(cfParquetKey)
+	if cfPKeyARN != "arn:aws:cloudfront::123456789012:distribution/EDFDVBD632BHFR5" {
+		t.Errorf("got CloudFront Parquet S3 Key ARN %s", cfPKeyARN)
+	}
+	if cfPKeyShort != "EDFDVBD632BHFR5" {
+		t.Errorf("got CloudFront Parquet S3 Key shortID %s", cfPKeyShort)
+	}
+}
+
+func TestQuotaTracker_AtomicByteCountingAndConcurrency(t *testing.T) {
+	tracker := NewQuotaTracker()
+
+	// Initial count
+	if tracker.TotalBytesProcessed() != 0 {
+		t.Fatalf("expected initial bytes to be 0, got %d", tracker.TotalBytesProcessed())
+	}
+	if tracker.TotalCompressedBytes() != 0 {
+		t.Fatalf("expected initial compressed bytes to be 0, got %d", tracker.TotalCompressedBytes())
+	}
+
+	// High concurrency stress test: 50 goroutines adding 100 chunks of 1024 bytes
+	numGoroutines := 50
+	chunksPerGoroutine := 100
+	chunkSize := int64(1024)
+	expectedTotal := int64(numGoroutines*chunksPerGoroutine) * chunkSize
+
+	var wg sync.WaitGroup
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < chunksPerGoroutine; j++ {
+				tracker.RecordBytes(chunkSize)
+				tracker.RecordCompressedBytes(chunkSize / 2)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if total := tracker.TotalBytesProcessed(); total != expectedTotal {
+		t.Fatalf("got total bytes %d, want %d", total, expectedTotal)
+	}
+	if totalCompressed := tracker.TotalCompressedBytes(); totalCompressed != expectedTotal/2 {
+		t.Fatalf("got total compressed bytes %d, want %d", totalCompressed, expectedTotal/2)
+	}
+
+	// Non-positive additions should not change count
+	tracker.RecordBytes(0)
+	tracker.RecordBytes(-500)
+	if total := tracker.TotalBytesProcessed(); total != expectedTotal {
+		t.Fatalf("got total bytes %d after non-positive record, want %d", total, expectedTotal)
+	}
+}
+
+func TestQuotaTracker_FairUseWarningRateLimiting(t *testing.T) {
+	tracker := NewQuotaTracker()
+	t0 := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+
+	// 1. First warning at t0 must emit
+	if !tracker.LogFairUseWarningAt(25, t0) {
+		t.Fatal("expected first fair-use warning to be emitted")
+	}
+
+	// 2. Immediate subsequent warning at t0 + 10m must be suppressed
+	if tracker.LogFairUseWarningAt(25, t0.Add(10*time.Minute)) {
+		t.Fatal("expected fair-use warning at +10m to be rate-limited and suppressed")
+	}
+
+	// 3. Warning at t0 + 59m must still be suppressed
+	if tracker.LogFairUseWarningAt(25, t0.Add(59*time.Minute)) {
+		t.Fatal("expected fair-use warning at +59m to be suppressed")
+	}
+
+	// 4. Warning at t0 + 60m (1 hour later) must emit
+	if !tracker.LogFairUseWarningAt(25, t0.Add(60*time.Minute)) {
+		t.Fatal("expected fair-use warning at +60m to be emitted")
+	}
+
+	// 5. Warning at t0 + 75m must be suppressed again
+	if tracker.LogFairUseWarningAt(25, t0.Add(75*time.Minute)) {
+		t.Fatal("expected fair-use warning at +75m to be suppressed")
+	}
+
+	// 6. ResetWarningTime allows immediate re-emission
+	tracker.ResetWarningTime()
+	if !tracker.LogFairUseWarningAt(25, t0.Add(76*time.Minute)) {
+		t.Fatal("expected warning to emit after ResetWarningTime")
+	}
+}
+
+func TestClaims_LimitsAndMaxMonthlyGB(t *testing.T) {
+	// 1. Claims with explicit MaxMonthlyGB and MaxContainerRecords
+	jsonClaims := `{
+		"id": "lic_gb_test",
+		"customer": {"name": "Throughput Customer"},
+		"product": "otel-aws-log-processor",
+		"plan": "pro",
+		"issued_at": "2026-09-01T00:00:00Z",
+		"limits": {
+			"max_monthly_gb": 25000,
+			"max_container_records": 50000
+		}
+	}`
+
+	var claims Claims
+	if err := json.Unmarshal([]byte(jsonClaims), &claims); err != nil {
+		t.Fatalf("failed to unmarshal claims: %v", err)
+	}
+
+	if claims.Limits == nil {
+		t.Fatal("expected claims.Limits to not be nil")
+	}
+	if claims.Limits.MaxMonthlyGB != 25000 {
+		t.Errorf("got MaxMonthlyGB %d, want 25000", claims.Limits.MaxMonthlyGB)
+	}
+	if claims.Limits.MaxContainerRecords != 50000 {
+		t.Errorf("got MaxContainerRecords %d, want 50000", claims.Limits.MaxContainerRecords)
+	}
+	if gb := GetMaxMonthlyGB(&claims); gb != 25000 {
+		t.Errorf("got GetMaxMonthlyGB %d, want 25000", gb)
+	}
+
+	// 2. Uncapped / omitted limits
+	if gb := GetMaxMonthlyGB(nil); gb != 0 {
+		t.Errorf("got GetMaxMonthlyGB(nil) %d, want 0", gb)
+	}
+	if gb := GetMaxMonthlyGB(&Claims{}); gb != 0 {
+		t.Errorf("got GetMaxMonthlyGB(empty) %d, want 0", gb)
+	}
+	if gb := GetMaxMonthlyGB(&Claims{Limits: &Limits{MaxMonthlyGB: 0}}); gb != 0 {
+		t.Errorf("got GetMaxMonthlyGB(0) %d, want 0", gb)
+	}
+}
+
+func TestEnforce_ThroughputFairUseNonBlocking(t *testing.T) {
+	_, privKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+	pubKey := privKey.Public().(ed25519.PublicKey)
+
+	// Issue token with MaxMonthlyTB = 25
+	token := signTestToken(&Claims{
+		ID:        "lic_throughput_soft_test",
+		Customer:  Customer{Name: "Soft Enforcement Corp"},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierPro,
+		IssuedAt:  time.Now().UTC().Add(-1 * time.Hour),
+		ExpiresAt: time.Now().UTC().Add(365 * 24 * time.Hour),
+		Limits: &Limits{
+			MaxMonthlyGB: 25000,
+			MaxResources: 10,
+		},
+		Scope: &Scope{
+			Accounts: []string{"123456789012"},
+		},
+	}, privKey)
+
+	t.Run("WithinThroughputLimit", func(t *testing.T) {
+		quotaTracker := NewQuotaTracker()
+		quotaTracker.RecordBytes(1024 * 1024) // 1 MB
+
+		status, err := Enforce(EnforcementOptions{
+			Environment:     "production",
+			LicenseKey:      token,
+			PublicKey:       pubKey,
+			CallerAccountID: "123456789012",
+			QuotaTracker:    quotaTracker,
+			EnforcementMode: "strict",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error within throughput limit: %v", err)
+		}
+		if !status.Valid {
+			t.Fatal("expected status.Valid to be true")
+		}
+		if status.ThroughputExceeded {
+			t.Fatal("expected status.ThroughputExceeded to be false")
+		}
+	})
+
+	t.Run("ThroughputExceeded_Strict_NeverBlocks", func(t *testing.T) {
+		quotaTracker := NewQuotaTracker()
+		quotaTracker.SetThroughputExceeded(true) // flag throughput overage
+
+		// Crucial acceptance criterion: Even in strict mode, throughput fair-use breach
+		// NEVER returns an error, NEVER halts execution, and NEVER drops log records.
+		status, err := Enforce(EnforcementOptions{
+			Environment:     "production",
+			LicenseKey:      token,
+			PublicKey:       pubKey,
+			CallerAccountID: "123456789012",
+			QuotaTracker:    quotaTracker,
+			EnforcementMode: "strict",
+		})
+		if err != nil {
+			t.Fatalf("throughput overage must NEVER return an error, got: %v", err)
+		}
+		if !status.Valid {
+			t.Fatal("expected status.Valid to be true on throughput overage")
+		}
+		if !status.ThroughputExceeded {
+			t.Fatal("expected status.ThroughputExceeded to be true")
+		}
+	})
+
+	t.Run("ThroughputExceeded_ViaEnvVar", func(t *testing.T) {
+		t.Setenv("DIVMORA_THROUGHPUT_EXCEEDED", "true")
+		quotaTracker := NewQuotaTracker()
+
+		status, err := Enforce(EnforcementOptions{
+			Environment:     "production",
+			LicenseKey:      token,
+			PublicKey:       pubKey,
+			CallerAccountID: "123456789012",
+			QuotaTracker:    quotaTracker,
+			EnforcementMode: "strict",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !status.Valid {
+			t.Fatal("expected status.Valid to be true")
+		}
+		if !status.ThroughputExceeded {
+			t.Fatal("expected status.ThroughputExceeded to be true via env var")
+		}
+	})
+}
+
+func TestEmitCloudWatchEMF_WithBytesProcessed(t *testing.T) {
+	status := &ValidationStatus{
+		Valid:        true,
+		StatusReason: "valid",
+		Claims: &Claims{
+			ID:   "lic_emf_bytes_test",
+			Plan: TierEnterprise,
+		},
+		ThroughputExceeded: true,
+	}
+
+	resourceARN := "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/prod-alb/123456"
+	recordsProcessed := 1500
+	activeResources := 12
+	bytesProcessed := int64(10485760) // 10 MB
+
+	payload := BuildEMFPayload(status, "production", recordsProcessed, activeResources, bytesProcessed, []string{resourceARN})
+	if payload == nil {
+		t.Fatal("expected payload not to be nil")
+	}
+
+	// Verify top-level fields
+	if payload["Environment"] != "production" {
+		t.Errorf("got Environment %v, want production", payload["Environment"])
+	}
+	if payload["Status"] != "valid" {
+		t.Errorf("got Status %v, want valid", payload["Status"])
+	}
+	if payload["RecordsProcessed"] != recordsProcessed {
+		t.Errorf("got RecordsProcessed %v, want %d", payload["RecordsProcessed"], recordsProcessed)
+	}
+	if payload["BytesProcessed"] != bytesProcessed {
+		t.Errorf("got BytesProcessed %v, want %d", payload["BytesProcessed"], bytesProcessed)
+	}
+	if payload["ActiveMonitoredResources"] != activeResources {
+		t.Errorf("got ActiveMonitoredResources %v, want %d", payload["ActiveMonitoredResources"], activeResources)
+	}
+	if payload["LicenseID"] != "lic_emf_bytes_test" {
+		t.Errorf("got LicenseID %v, want lic_emf_bytes_test", payload["LicenseID"])
+	}
+	if payload["Tier"] != TierEnterprise {
+		t.Errorf("got Tier %v, want %s", payload["Tier"], TierEnterprise)
+	}
+	if payload["ResourceARN"] != resourceARN {
+		t.Errorf("got ResourceARN %v, want %s", payload["ResourceARN"], resourceARN)
+	}
+	if payload["ThroughputExceeded"] != true {
+		t.Errorf("got ThroughputExceeded %v, want true", payload["ThroughputExceeded"])
+	}
+
+	// Verify CloudWatchMetrics metadata
+	awsMeta, ok := payload["_aws"].(map[string]any)
+	if !ok {
+		t.Fatal("missing _aws in EMF payload")
+	}
+	cwMetrics, ok := awsMeta["CloudWatchMetrics"].([]map[string]any)
+	if !ok || len(cwMetrics) < 2 {
+		t.Fatalf("expected at least 2 metric namespaces, got %d", len(cwMetrics))
+	}
+
+	// 1. Namespace Divmora/LogProcessor
+	logProcNS := cwMetrics[0]
+	if logProcNS["Namespace"] != "Divmora/LogProcessor" {
+		t.Errorf("got namespace %v, want Divmora/LogProcessor", logProcNS["Namespace"])
+	}
+	metrics := logProcNS["Metrics"].([]map[string]string)
+	hasBytesMetric := false
+	for _, m := range metrics {
+		if m["Name"] == "BytesProcessed" && m["Unit"] == "Bytes" {
+			hasBytesMetric = true
+			break
+		}
+	}
+	if !hasBytesMetric {
+		t.Error("missing BytesProcessed metric in Divmora/LogProcessor namespace")
+	}
+
+	// 2. Namespace Divmora/License
+	licenseNS := cwMetrics[1]
+	if licenseNS["Namespace"] != "Divmora/License" {
+		t.Errorf("got namespace %v, want Divmora/License", licenseNS["Namespace"])
+	}
+
+	// Verify FormatEMFPayload produces valid JSON
+	jsonStr, err := FormatEMFPayload(status, "production", recordsProcessed, activeResources, bytesProcessed, []string{resourceARN})
+	if err != nil {
+		t.Fatalf("FormatEMFPayload failed: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
+		t.Fatalf("invalid JSON output from FormatEMFPayload: %v", err)
+	}
+	if parsed["CentralMetricsRegion"] != "us-east-1" {
+		t.Errorf("got CentralMetricsRegion %v, want us-east-1", parsed["CentralMetricsRegion"])
+	}
+}
+
+func TestResolveCentralMetricsRegion(t *testing.T) {
+	t.Run("FromMetadata_MetricsRegion", func(t *testing.T) {
+		claims := &Claims{
+			Metadata: map[string]string{
+				"metrics_region": "eu-central-1",
+			},
+		}
+		if r := ResolveCentralMetricsRegion(claims); r != "eu-central-1" {
+			t.Errorf("got %q, want eu-central-1", r)
+		}
+	})
+
+	t.Run("FromMetadata_CloudWatchMetricsRegion", func(t *testing.T) {
+		claims := &Claims{
+			Metadata: map[string]string{
+				"cloudwatch_metrics_region": "us-west-2",
+			},
+		}
+		if r := ResolveCentralMetricsRegion(claims); r != "us-west-2" {
+			t.Errorf("got %q, want us-west-2", r)
+		}
+	})
+
+	t.Run("EmptyMetadata_DefaultsToUsEast1", func(t *testing.T) {
+		claims := &Claims{
+			Metadata: map[string]string{},
+		}
+		if r := ResolveCentralMetricsRegion(claims); r != "us-east-1" {
+			t.Errorf("got %q, want us-east-1", r)
+		}
+	})
+
+	t.Run("NilClaims_DefaultsToUsEast1", func(t *testing.T) {
+		if r := ResolveCentralMetricsRegion(nil); r != "us-east-1" {
+			t.Errorf("got %q, want us-east-1", r)
+		}
+	})
+
+	t.Run("StrictNoEnvVarOverride", func(t *testing.T) {
+		// Even if an operator or malicious user sets CLOUDWATCH_METRICS_REGION,
+		// the signed license metadata must remain authoritative to prevent quota tampering or configuration drift.
+		t.Setenv("CLOUDWATCH_METRICS_REGION", "ap-southeast-1")
+		claims := &Claims{
+			Metadata: map[string]string{
+				"metrics_region": "eu-west-1",
+			},
+		}
+		if r := ResolveCentralMetricsRegion(claims); r != "eu-west-1" {
+			t.Errorf("got %q, want eu-west-1 (env var override must be ignored)", r)
+		}
+
+		// When metadata is empty, it strictly defaults to us-east-1, NOT the env var!
+		emptyClaims := &Claims{}
+		if r := ResolveCentralMetricsRegion(emptyClaims); r != "us-east-1" {
+			t.Errorf("got %q, want us-east-1 (env var must not override default)", r)
+		}
+	})
+}
+
+func TestGetCurrentRegion(t *testing.T) {
+	t.Run("AWSRegion_Set", func(t *testing.T) {
+		t.Setenv("AWS_REGION", "eu-west-1")
+		t.Setenv("AWS_DEFAULT_REGION", "us-west-2")
+		if r := GetCurrentRegion(); r != "eu-west-1" {
+			t.Errorf("got %q, want eu-west-1", r)
+		}
+	})
+
+	t.Run("AWSDefaultRegion_Fallback", func(t *testing.T) {
+		t.Setenv("AWS_REGION", "")
+		t.Setenv("AWS_DEFAULT_REGION", "sa-east-1")
+		if r := GetCurrentRegion(); r != "sa-east-1" {
+			t.Errorf("got %q, want sa-east-1", r)
+		}
+	})
+
+	t.Run("Default_UsEast1", func(t *testing.T) {
+		t.Setenv("AWS_REGION", "")
+		t.Setenv("AWS_DEFAULT_REGION", "")
+		if r := GetCurrentRegion(); r != "us-east-1" {
+			t.Errorf("got %q, want us-east-1", r)
+		}
+	})
+}
+
+type mockCloudWatchMetricAPI struct {
+	mu    sync.Mutex
+	calls []*cloudwatch.PutMetricDataInput
+	err   error
+}
+
+func (m *mockCloudWatchMetricAPI) PutMetricData(ctx context.Context, params *cloudwatch.PutMetricDataInput, optFns ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, params)
+	return &cloudwatch.PutMetricDataOutput{}, m.err
+}
+
+func TestPublishCrossRegionMetrics(t *testing.T) {
+	mockCW := &mockCloudWatchMetricAPI{}
+	t.Setenv("AWS_REGION", "eu-central-1")
+
+	status := &ValidationStatus{
+		Valid:        true,
+		StatusReason: "valid",
+		Claims: &Claims{
+			ID:   "lic_cross_reg_test",
+			Plan: TierPro,
+			Metadata: map[string]string{
+				"metrics_region": "us-east-1",
+			},
+		},
+	}
+
+	err := PublishCrossRegionMetrics(context.Background(), mockCW, status, "production", 500, 3, int64(2048000), []string{"arn:aws:elasticloadbalancing:eu-central-1:123456789012:loadbalancer/app/test-alb/123"})
+	if err != nil {
+		t.Fatalf("PublishCrossRegionMetrics failed: %v", err)
+	}
+
+	mockCW.mu.Lock()
+	defer mockCW.mu.Unlock()
+
+	if len(mockCW.calls) != 2 {
+		t.Fatalf("expected 2 PutMetricData calls (Divmora/LogProcessor and Divmora/License), got %d", len(mockCW.calls))
+	}
+
+	// Verify Divmora/LogProcessor
+	call1 := mockCW.calls[0]
+	if *call1.Namespace != "Divmora/LogProcessor" {
+		t.Errorf("call 0 namespace: got %s, want Divmora/LogProcessor", *call1.Namespace)
+	}
+
+	// Verify Divmora/License
+	call2 := mockCW.calls[1]
+	if *call2.Namespace != "Divmora/License" {
+		t.Errorf("call 1 namespace: got %s, want Divmora/License", *call2.Namespace)
+	}
+
+	// Verify that Region dimension on metric datums reflects the current execution region (eu-central-1)
+	hasExecutingRegion := false
+	for _, datum := range call2.MetricData {
+		for _, dim := range datum.Dimensions {
+			if *dim.Name == "Region" && *dim.Value == "eu-central-1" {
+				hasExecutingRegion = true
+				break
+			}
+		}
+	}
+	if !hasExecutingRegion {
+		t.Errorf("expected Region=eu-central-1 dimension in License metric data")
+	}
+}
+
+func TestEmitMetrics_Routing(t *testing.T) {
+	t.Run("SameRegion_SkipsSDKCall", func(t *testing.T) {
+		t.Setenv("AWS_REGION", "us-east-1")
+		mockCW := &mockCloudWatchMetricAPI{}
+
+		status := &ValidationStatus{
+			Valid:        true,
+			StatusReason: "valid",
+			Claims: &Claims{
+				ID:   "lic_same_reg",
+				Plan: TierEnterprise,
+				Metadata: map[string]string{
+					"metrics_region": "us-east-1",
+				},
+			},
+		}
+
+		factoryCalled := false
+		cwFactory := func(targetRegion string) CloudWatchMetricAPI {
+			factoryCalled = true
+			return mockCW
+		}
+
+		EmitMetrics(context.Background(), cwFactory, status, "production", 100, 1, int64(1024), []string{"arn:aws:alb:1"})
+
+		if factoryCalled {
+			t.Error("expected cwFactory NOT to be called when current region == central region")
+		}
+		if len(mockCW.calls) != 0 {
+			t.Errorf("expected 0 SDK calls for same-region, got %d", len(mockCW.calls))
+		}
+	})
+
+	t.Run("CrossRegion_InvokesSDKCallWithCentralRegion", func(t *testing.T) {
+		t.Setenv("AWS_REGION", "ap-southeast-1")
+		mockCW := &mockCloudWatchMetricAPI{}
+
+		status := &ValidationStatus{
+			Valid:        true,
+			StatusReason: "valid",
+			Claims: &Claims{
+				ID:   "lic_cross_reg",
+				Plan: TierEnterprise,
+				Metadata: map[string]string{
+					"metrics_region": "us-east-1",
+				},
+			},
+		}
+
+		var targetRegionReceived string
+		cwFactory := func(targetRegion string) CloudWatchMetricAPI {
+			targetRegionReceived = targetRegion
+			return mockCW
+		}
+
+		EmitMetrics(context.Background(), cwFactory, status, "production", 200, 2, int64(2048), []string{"arn:aws:alb:2"})
+
+		if targetRegionReceived != "us-east-1" {
+			t.Errorf("cwFactory received targetRegion %q, want us-east-1", targetRegionReceived)
+		}
+		if len(mockCW.calls) == 0 {
+			t.Error("expected cross-region SDK calls to be made, got 0")
+		}
+	})
+}
+
+func TestLimits_QuotasAndAccessors(t *testing.T) {
+	t.Run("JSONUnmarshalAndAccessors", func(t *testing.T) {
+		payload := []byte(`{
+			"max_resources": 50,
+			"max_accounts": 5,
+			"max_monthly_gb": 20000,
+			"max_container_records": 100000,
+			"custom_limit": 999
+		}`)
+
+		var l Limits
+		if err := json.Unmarshal(payload, &l); err != nil {
+			t.Fatalf("failed to unmarshal Limits: %v", err)
+		}
+
+		if l.MaxResources != 50 {
+			t.Errorf("expected MaxResources=50, got %d", l.MaxResources)
+		}
+		if l.MaxAccounts != 5 {
+			t.Errorf("expected MaxAccounts=5, got %d", l.MaxAccounts)
+		}
+		if l.MaxMonthlyGB != 20000 {
+			t.Errorf("expected MaxMonthlyGB=20000, got %d", l.MaxMonthlyGB)
+		}
+		if l.MaxContainerRecords != 100000 {
+			t.Errorf("expected MaxContainerRecords=100000, got %d", l.MaxContainerRecords)
+		}
+		if l.Raw["custom_limit"] != 999 {
+			t.Errorf("expected Raw[custom_limit]=999, got %d", l.Raw["custom_limit"])
+		}
+
+		claims := &Claims{
+			Limits: &l,
+		}
+		if mr := GetMaxResources(claims); mr != 50 {
+			t.Errorf("expected GetMaxResources=50, got %d", mr)
+		}
+		if ma := GetMaxAccounts(claims); ma != 5 {
+			t.Errorf("expected GetMaxAccounts=5, got %d", ma)
+		}
+		if mgb := GetMaxMonthlyGB(claims); mgb != 20000 {
+			t.Errorf("expected GetMaxMonthlyGB=20000, got %d", mgb)
+		}
+	})
+
+	t.Run("NilAndEmptyLimits", func(t *testing.T) {
+		if GetMaxResources(nil) != 0 {
+			t.Errorf("expected 0 for nil claims")
+		}
+		if GetMaxAccounts(nil) != 0 {
+			t.Errorf("expected 0 for nil claims")
+		}
+		if GetMaxMonthlyGB(nil) != 0 {
+			t.Errorf("expected 0 for nil claims")
+		}
+
+		emptyClaims := &Claims{}
+		if GetMaxResources(emptyClaims) != 0 {
+			t.Errorf("expected 0 for empty claims")
+		}
+		if GetMaxAccounts(emptyClaims) != 0 {
+			t.Errorf("expected 0 for empty claims")
+		}
+		if GetMaxMonthlyGB(emptyClaims) != 0 {
+			t.Errorf("expected 0 for empty claims")
+		}
+	})
+
+	t.Run("JSONMarshalRoundTrip", func(t *testing.T) {
+		l := Limits{
+			MaxResources:        15,
+			MaxAccounts:         2,
+			MaxMonthlyGB:        5000,
+			MaxContainerRecords: 50000,
+			Raw: map[string]int64{
+				"custom_val": 42,
+			},
+		}
+
+		data, err := json.Marshal(&l)
+		if err != nil {
+			t.Fatalf("failed to marshal Limits: %v", err)
+		}
+
+		var roundTrip Limits
+		if err := json.Unmarshal(data, &roundTrip); err != nil {
+			t.Fatalf("failed to unmarshal roundtrip: %v", err)
+		}
+
+		if roundTrip.MaxResources != 15 {
+			t.Errorf("expected MaxResources=15, got %d", roundTrip.MaxResources)
+		}
+		if roundTrip.MaxAccounts != 2 {
+			t.Errorf("expected MaxAccounts=2, got %d", roundTrip.MaxAccounts)
+		}
+		if roundTrip.MaxMonthlyGB != 5000 {
+			t.Errorf("expected MaxMonthlyGB=5000, got %d", roundTrip.MaxMonthlyGB)
+		}
+		if roundTrip.Raw["custom_val"] != 42 {
+			t.Errorf("expected Raw[custom_val]=42, got %d", roundTrip.Raw["custom_val"])
+		}
+	})
+}
+

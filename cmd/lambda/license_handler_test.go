@@ -205,4 +205,149 @@ func TestHandlerLicensingModes(t *testing.T) {
 			t.Errorf("got status reason %s, want feature_not_entitled", statusUnentitled.StatusReason)
 		}
 	})
+
+	// 6. Test Production Resource Quota Verification
+	t.Run("ProductionResourceQuotaVerification", func(t *testing.T) {
+		license.SetVerificationPublicKey(testHandlerPubKey)
+		defer license.ResetVerificationPublicKey()
+
+		quotaClaims := &license.Claims{
+			ID: "lic_handler_quota_test",
+			Customer: license.Customer{
+				Name: "Resource Pack Customer",
+			},
+			Product: "otel-aws-log-processor",
+			Plan:    license.TierPro,
+			Limits: &license.Limits{
+				MaxResources: 2,
+			},
+			Scope: &license.Scope{
+				Accounts: []string{"123456789012"},
+				Resources: []string{
+					"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/*",
+				},
+			},
+			IssuedAt:  time.Now().UTC(),
+			ExpiresAt: time.Now().UTC().AddDate(1, 0, 0),
+		}
+		token := signTestHandlerToken(quotaClaims, testHandlerPrivKey)
+
+		// 1. Within quota (2 resources)
+		tracker := license.NewResourceTracker()
+		optsWithin := license.EnforcementOptions{
+			Environment:     "production",
+			EnforcementMode: "strict",
+			LicenseKey:      token,
+			CallerAccountID: "123456789012",
+			SourceResourceARNs: []string{
+				"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/alb-1/hash",
+				"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/alb-2/hash",
+			},
+			ResourceTracker: tracker,
+			PublicKey:       testHandlerPubKey,
+		}
+		statusWithin, err := license.Enforce(optsWithin)
+		if err != nil || !statusWithin.Valid {
+			t.Fatalf("expected within quota to succeed: %v", err)
+		}
+		if tracker.Count() != 2 {
+			t.Errorf("expected 2 active resources, got %d", tracker.Count())
+		}
+
+		// 2. Quota breach (3rd resource)
+		optsBreach := license.EnforcementOptions{
+			Environment:     "production",
+			EnforcementMode: "strict",
+			LicenseKey:      token,
+			CallerAccountID: "123456789012",
+			SourceResourceARNs: []string{
+				"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/alb-3/hash",
+			},
+			ResourceTracker: tracker,
+			PublicKey:       testHandlerPubKey,
+		}
+		statusBreach, errBreach := license.Enforce(optsBreach)
+		if errBreach == nil {
+			t.Fatal("expected quota breach error")
+		}
+		if !license.IsDeterministicLicenseError(errBreach) {
+			t.Errorf("expected deterministic error on quota breach, got: %v", errBreach)
+		}
+		if statusBreach.Valid || statusBreach.StatusReason != "resource_quota_exceeded" {
+			t.Errorf("expected status reason resource_quota_exceeded, got: %s", statusBreach.StatusReason)
+		}
+	})
+
+	// 7. Test Production Throughput Fair-Use Soft Enforcement (Non-Blocking Invariant)
+	t.Run("ProductionThroughputOverage_SoftEnforcementNeverHalts", func(t *testing.T) {
+		license.SetVerificationPublicKey(testHandlerPubKey)
+		defer license.ResetVerificationPublicKey()
+
+		throughputClaims := &license.Claims{
+			ID: "lic_handler_throughput_test",
+			Customer: license.Customer{
+				Name: "Hyper Scale AdTech Corp",
+			},
+			Product: "otel-aws-log-processor",
+			Plan:    license.TierPro,
+			Limits: &license.Limits{
+				MaxMonthlyGB: 10000,
+				MaxResources: 5,
+			},
+			Scope: &license.Scope{
+				Accounts: []string{"123456789012"},
+			},
+			IssuedAt:  time.Now().UTC(),
+			ExpiresAt: time.Now().UTC().AddDate(1, 0, 0),
+		}
+		token := signTestHandlerToken(throughputClaims, testHandlerPrivKey)
+
+		t.Setenv("ENVIRONMENT", "production")
+		t.Setenv("DIVMORA_LICENSE_MODE", "strict")
+		t.Setenv("DIVMORA_LICENSE_KEY", token)
+		t.Setenv("DIVMORA_LICENSE_FAILURE_ACTION", "discard")
+		t.Setenv("DIVMORA_THROUGHPUT_EXCEEDED", "true")
+
+		// Create SQS messages representing log batches
+		sqsEvent := events.SQSEvent{
+			Records: []events.SQSMessage{
+				{MessageId: "msg-throughput-1", Body: `{"Records":[]}`},
+				{MessageId: "msg-throughput-2", Body: `{"Records":[]}`},
+			},
+		}
+
+		resp, err := handler(ctx, sqsEvent)
+		if err != nil {
+			t.Fatalf("throughput overage must NEVER halt execution or return error: %v", err)
+		}
+		if len(resp.BatchItemFailures) != 0 {
+			t.Fatalf("expected 0 batch item failures (zero log records must be dropped or dead-lettered on volume overage), got %d", len(resp.BatchItemFailures))
+		}
+
+		// Also verify via Enforce directly
+		quotaTracker := license.NewQuotaTracker()
+		quotaTracker.RecordBytes(100 * 1024 * 1024) // 100 MB
+		quotaTracker.SetThroughputExceeded(true)
+
+		status, err := license.Enforce(license.EnforcementOptions{
+			Environment:     "production",
+			EnforcementMode: "strict",
+			LicenseKey:      token,
+			CallerAccountID: "123456789012",
+			QuotaTracker:    quotaTracker,
+			PublicKey:       testHandlerPubKey,
+		})
+		if err != nil {
+			t.Fatalf("expected Enforce to succeed without error on throughput overage, got: %v", err)
+		}
+		if !status.Valid {
+			t.Fatal("expected status.Valid to be true: log processing must continue at 100% full line rate")
+		}
+		if !status.ThroughputExceeded {
+			t.Fatal("expected status.ThroughputExceeded to be true")
+		}
+		if quotaTracker.TotalBytesProcessed() != 100*1024*1024 {
+			t.Errorf("got TotalBytesProcessed %d, want %d", quotaTracker.TotalBytesProcessed(), 100*1024*1024)
+		}
+	})
 }

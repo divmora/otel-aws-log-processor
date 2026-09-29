@@ -1,0 +1,115 @@
+# Zoho Books Item Catalog & Product Line-Items Specification
+# Product: AWS Log to OpenTelemetry Processor (otel-aws-log-processor)
+# Organization: Divmora Inc.
+
+version: "1.0"
+product: "otel-aws-log-processor"
+currency: "USD"
+
+items:
+  # ---------------------------------------------------------------------------
+  # Base Subscription Plans
+  # ---------------------------------------------------------------------------
+  - item_name: "otel-aws-log-processor Pro Plan (Monthly)"
+    sku: "DIV-OTEL-PRO-MONTHLY"
+    rate: 1250.00
+    unit: "month"
+    item_type: "service"
+    product_type: "digital_service"
+    account_name: "Subscription Revenue"
+    description: >
+      Commercial Pro subscription for otel-aws-log-processor.
+      Includes monitored resource pack of up to 25 resources (ALB, NLB, CloudFront Gzip, WAF)
+      across up to 3 AWS spoke accounts, and up to 10 TB/month fair-use log throughput.
+    custom_fields:
+      tier: "pro"
+      max_resources: 25
+      max_accounts: 3
+      included_monthly_tb: 10
+      billing_frequency: "monthly"
+
+  - item_name: "otel-aws-log-processor Enterprise Base Plan (Annual)"
+    sku: "DIV-OTEL-ENT-BASE-ANNUAL"
+    rate: 18000.00
+    unit: "year"
+    item_type: "service"
+    product_type: "digital_service"
+    account_name: "Subscription Revenue"
+    description: >
+      Annual Enterprise Base platform subscription for otel-aws-log-processor.
+      Includes 50 monitored resources, 10+ AWS accounts / AWS Organization fleet ingestion,
+      up to 50 TB/month fair-use log throughput, Parquet streaming, gRPC transport,
+      mTLS authentication, MaxMind GeoIP enrichment, and offline CRL support.
+    custom_fields:
+      tier: "enterprise"
+      max_resources: 50
+      max_accounts: 10
+      included_monthly_tb: 50
+      billing_frequency: "annual"
+
+  # ---------------------------------------------------------------------------
+  # Throughput Volume Packs & True-Up Line Items
+  # ---------------------------------------------------------------------------
+  - item_name: "Enterprise 25 TB Throughput Volume Pack"
+    sku: "DIV-OTEL-VOL-PACK-25TB"
+    rate: 500.00
+    unit: "pack"
+    item_type: "service"
+    product_type: "digital_service"
+    account_name: "Addon Revenue"
+    description: >
+      Additional 25 TB/month monthly log throughput capacity block for Enterprise plans
+      (effective ingestion rate of $0.02 per GB, >96% savings over AWS CloudWatch Logs).
+    custom_fields:
+      volume_tb: 25
+      billing_frequency: "monthly"
+      effective_per_gb: 0.02
+
+  - item_name: "Log Throughput Monthly Overage True-Up"
+    sku: "DIV-OTEL-TRUEUP-PER-TB"
+    rate: 20.00
+    unit: "TB"
+    item_type: "service"
+    product_type: "digital_service"
+    account_name: "Usage True-Up Revenue"
+    description: >
+      Contractual fair-use bandwidth overage true-up per Terabyte for uncommitted throughput
+      exceeding the base licensed allocation. Synchronized from CloudWatch EMF BytesProcessed telemetry.
+    custom_fields:
+      metric_source: "Divmora/License:BytesProcessed"
+      billing_frequency: "monthly_arrears"
+
+  # ---------------------------------------------------------------------------
+  # Resource Expansion Packs
+  # ---------------------------------------------------------------------------
+  - item_name: "Monitored Resource Expansion Pack (25 Resources)"
+    sku: "DIV-OTEL-RES-PACK-25"
+    rate: 1000.00
+    unit: "month"
+    item_type: "service"
+    product_type: "digital_service"
+    account_name: "Addon Revenue"
+    description: >
+      Additional pack of 25 active monitored ingress endpoints (ALBs, NLBs, CloudFront distributions,
+      or WAF WebACLs) for multi-spoke AWS landing zones.
+    custom_fields:
+      additional_resources: 25
+      billing_frequency: "monthly"
+
+  # ---------------------------------------------------------------------------
+  # Hyper-Scale Petabyte Custom ELA
+  # ---------------------------------------------------------------------------
+  - item_name: "Hyper-Scale Petabyte Committed Capacity ELA"
+    sku: "DIV-OTEL-ELA-PETABYTE"
+    rate: 0.00
+    unit: "contract"
+    item_type: "service"
+    product_type: "digital_service"
+    account_name: "Enterprise ELA Revenue"
+    description: >
+      Custom Enterprise License Agreement (ELA) for petabyte-scale workloads (250 TB+ to Petabytes/month).
+      Includes custom volume commitments, dedicated SLA, tailored sub-cent per-GB pricing ($0.008–$0.015/GB),
+      and true-up audit reconciliation.
+    custom_fields:
+      tier: "enterprise_ela"
+      pricing_model: "custom_committed"

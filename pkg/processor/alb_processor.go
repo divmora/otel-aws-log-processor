@@ -16,6 +16,11 @@ type ALBProcessor struct {
 	MaxBatchSize  int
 	MaxConcurrent int
 	Parser        parser.LogParser[parser.ALBLogEntry]
+	ByteTracker   ByteTracker
+}
+
+func (p *ALBProcessor) SetByteTracker(bt ByteTracker) {
+	p.ByteTracker = bt
 }
 
 func (p *ALBProcessor) Name() string {
@@ -43,7 +48,7 @@ func (p *ALBProcessor) Process(ctx context.Context, logger *slog.Logger, s3Clien
 			AccountID:   accountID,
 			Region:      region,
 		}, nil
-	})
+	}, p.ByteTracker)
 }
 
 // ALBAdapter implementation
