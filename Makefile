@@ -81,6 +81,8 @@ cfn-lint:
 		cfn-lint deploy/cloudformation/*.yaml; \
 	elif [ -x "$$HOME/Library/Python/3.12/bin/cfn-lint" ]; then \
 		"$$HOME/Library/Python/3.12/bin/cfn-lint" deploy/cloudformation/*.yaml; \
+	elif [ -x "$$HOME/.local/bin/cfn-lint" ]; then \
+		"$$HOME/.local/bin/cfn-lint" deploy/cloudformation/*.yaml; \
 	else \
 		echo "cfn-lint not found in PATH (install via 'pip install cfn-lint')"; \
 	fi
