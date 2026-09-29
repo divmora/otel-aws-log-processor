@@ -1,4 +1,4 @@
-.PHONY: build sign-release clean test test-coverage dev-setup fmt lint lambda-package docker-build docker-build-multiarch docs-serve help
+.PHONY: build sign-release clean test test-coverage dev-setup fmt lint cfn-lint lambda-package docker-build docker-build-multiarch docs-serve help
 
 export PATH := $(shell go env GOPATH)/bin:$(PATH)
 
@@ -74,6 +74,17 @@ fmt:
 lint:
 	@golangci-lint run
 
+# Lint CloudFormation templates (requires cfn-lint)
+cfn-lint:
+	@echo "Linting CloudFormation templates..."
+	@if command -v cfn-lint >/dev/null 2>&1; then \
+		cfn-lint deploy/cloudformation/*.yaml; \
+	elif [ -x "$$HOME/Library/Python/3.12/bin/cfn-lint" ]; then \
+		"$$HOME/Library/Python/3.12/bin/cfn-lint" deploy/cloudformation/*.yaml; \
+	else \
+		echo "cfn-lint not found in PATH (install via 'pip install cfn-lint')"; \
+	fi
+
 # Build local Docker image
 docker-build:
 	@docker build --provenance=false --no-cache \
@@ -110,6 +121,7 @@ help:
 	@echo "  make dev-setup              - Install dev dependencies"
 	@echo "  make fmt                    - Format Go code"
 	@echo "  make lint                   - Lint Go code"
+	@echo "  make cfn-lint               - Lint CloudFormation templates"
 	@echo "  make docker-build           - Build Docker image locally"
 	@echo "  make docker-build-multiarch - Build multi-arch Docker image"
 	@echo "  make docs-serve             - Serve documentation locally on port $(PORT)"

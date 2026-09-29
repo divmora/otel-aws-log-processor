@@ -59,8 +59,19 @@ func getCloudWatchClient(targetRegion string) license.CloudWatchMetricAPI {
 }
 
 func init() {
-	// Initialize structured logger (JSON format)
-	logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	// Initialize structured logger (JSON format) with LOG_LEVEL support
+	var logLevel slog.Level
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
+	case "debug":
+		logLevel = slog.LevelDebug
+	case "warn", "warning":
+		logLevel = slog.LevelWarn
+	case "error":
+		logLevel = slog.LevelError
+	default:
+		logLevel = slog.LevelInfo
+	}
+	logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
 	slog.SetDefault(logger)
 
 	// Initialize AWS SDK v2 configuration and S3 client

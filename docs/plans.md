@@ -294,7 +294,7 @@ Commercial licenses are cryptographically signed Ed25519 tokens (format `DIV1.<p
 ### 1. AWS CloudFormation Parameter
 ```bash
 aws cloudformation deploy \
-  --template-file otel-aws-log-processor-lambda.yaml \
+  --template-file deploy/cloudformation/lambda.yaml \
   --stack-name otel-aws-log-processor-prod \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides \
@@ -306,7 +306,7 @@ aws cloudformation deploy \
 Store the token in AWS Secrets Manager and pass the Secret ARN:
 ```bash
 aws cloudformation deploy \
-  --template-file otel-aws-log-processor-lambda.yaml \
+  --template-file deploy/cloudformation/lambda.yaml \
   --stack-name otel-aws-log-processor-prod \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides \

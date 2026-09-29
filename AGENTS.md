@@ -22,6 +22,8 @@ Welcome to `otel-aws-log-processor`! This guide provides context, architecture d
 otel-aws-log-processor/
 ├── cmd/
 │   └── lambda/                   # AWS Lambda entrypoint (triggered by SQS)
+├── deploy/
+│   └── cloudformation/           # Production AWS CloudFormation templates (Lambda, SQS, DLQ, IAM, alarms)
 ├── pkg/
 │   ├── events/                   # S3 and EventBridge SQS message parsing
 │   ├── model/                    # OpenTelemetry JSON data models
@@ -78,6 +80,10 @@ otel-aws-log-processor/
 - **Run linter**:
   ```bash
   make lint
+  ```
+- **Lint CloudFormation templates**:
+  ```bash
+  make cfn-lint
   ```
 - **Package Lambda zip**:
   ```bash
