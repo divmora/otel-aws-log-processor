@@ -107,6 +107,9 @@ func init() {
 
 	// Initialize OTLP Client
 	otlpClient = sender.NewOTLPClient(otlpEndpoint, basicAuthUser, basicAuthPass, maxRetries, maxBatchSize, maxConcurrent, logger)
+	if headers := sender.ParseHeadersFromEnv(); len(headers) > 0 {
+		otlpClient.SetHeaders(headers)
+	}
 
 	// Initialize Non-Production Quota Tracker & Metering Engine
 	quotaTracker = license.NewQuotaTracker()
@@ -413,7 +416,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 	// Send successful entries to OTLP
 	if len(allEntries) > 0 {
 		logger.Info("Sending collected entries to OTLP", "count", len(allEntries))
-		if err := otlpClient.SendLogs(allEntries); err != nil {
+		if err := otlpClient.SendLogs(ctx, allEntries); err != nil {
 			logger.Error("Error sending to OTLP", "error", err)
 			return response, err
 		}

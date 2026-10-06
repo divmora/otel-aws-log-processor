@@ -24,6 +24,8 @@ Metadata:
           default: "OpenTelemetry Exporter Configuration"
         Parameters:
           - OtlpLogsEndpoint
+          - OtlpHeaders
+          - OtlpHeadersSecretArn
           - BasicAuthUsername
           - BasicAuthPassword
           - BasicAuthPasswordSecretArn
@@ -127,6 +129,19 @@ Parameters:
     Type: String
     Default: "http://localhost:4318/v1/logs"
     Description: HTTP destination endpoint for exporting OpenTelemetry OTLP/HTTP log records.
+
+  OtlpHeaders:
+    Type: String
+    Default: ""
+    Description: >
+      Optional comma-separated list of key=value headers for OTLP HTTP requests
+      (e.g., 'api-key=secret123,tenant-id=prod'). Also supports standard OTEL_EXPORTER_OTLP_HEADERS.
+
+  OtlpHeadersSecretArn:
+    Type: String
+    Default: ""
+    Description: >
+      Optional AWS Secrets Manager secret ARN storing custom OTLP HTTP headers (e.g. API keys or Bearer tokens).
 
   BasicAuthUsername:
     Type: String
@@ -298,8 +313,10 @@ Parameters:
 Conditions:
   HasVpc: !Not [!Equals [!Join ["", !Ref VpcSubnetIds], ""]]
   HasBasicAuthSecret: !Not [!Equals [!Ref BasicAuthPasswordSecretArn, ""]]
+  HasOtlpHeadersSecret: !Not [!Equals [!Ref OtlpHeadersSecretArn, ""]]
   HasLicenseSecret: !Not [!Equals [!Ref DivmoraLicenseKeySecretArn, ""]]
   HasDirectBasicAuthPassword: !Not [!Equals [!Ref BasicAuthPassword, ""]]
+  HasDirectOtlpHeaders: !Not [!Equals [!Ref OtlpHeaders, ""]]
   HasDirectLicenseKey: !Not [!Equals [!Ref DivmoraLicenseKey, ""]]
   HasAllowedSourceAccounts: !Not [!Equals [!Join ["", !Ref AllowedSourceAccountIds], ""]]
   HasOrganizationId: !Not [!Equals [!Ref OrganizationId, ""]]
@@ -464,6 +481,16 @@ Resources:
                   Resource: !Ref BasicAuthPasswordSecretArn
           - !Ref "AWS::NoValue"
         - !If
+          - HasOtlpHeadersSecret
+          - PolicyName: OtlpHeadersSecretReadPolicy
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action: secretsmanager:GetSecretValue
+                  Resource: !Ref OtlpHeadersSecretArn
+          - !Ref "AWS::NoValue"
+        - !If
           - HasLicenseSecret
           - PolicyName: LicenseSecretReadPolicy
             PolicyDocument:
@@ -517,6 +544,10 @@ Resources:
           ENVIRONMENT: !Ref EnvironmentName
           LOG_LEVEL: !Ref LogLevel
           OTLP_HTTP_LOGS_ENDPOINT: !Ref OtlpLogsEndpoint
+          OTEL_EXPORTER_OTLP_HEADERS: !If
+            - HasOtlpHeadersSecret
+            - !Sub "{{resolve:secretsmanager:${OtlpHeadersSecretArn}:SecretString}}"
+            - !If [HasDirectOtlpHeaders, !Ref OtlpHeaders, ""]
           BASIC_AUTH_USERNAME: !Ref BasicAuthUsername
           BASIC_AUTH_PASSWORD: !If
             - HasBasicAuthSecret
