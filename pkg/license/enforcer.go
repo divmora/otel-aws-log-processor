@@ -26,7 +26,6 @@ import (
 // Extra non-production environments supplementing liblicense.DefaultNonProductionEnvironments.
 var extraNonProdEnvironments = []string{"preview", "poc"}
 
-
 // IsNonProductionEnvironment returns true if the normalized environment string indicates non-production.
 // It evaluates compliance using liblicense's standard Non-Production Additional Use Grant terms.
 func IsNonProductionEnvironment(env string) bool {
@@ -360,6 +359,7 @@ type EnforcementOptions struct {
 	BatchRecordCount   int
 	QuotaTracker       *QuotaTracker
 	ResourceTracker    *ResourceTracker
+	CloudWatchRegistry *CloudWatchRegistry
 	BucketName         string
 	ExercisedFeatures  []string
 	PublicKey          ed25519.PublicKey
@@ -661,16 +661,31 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 
 	maxResources := GetMaxResources(status.Claims)
 	activeResources := 0
-	if opts.ResourceTracker != nil {
+	entitlementKey := ResolveEntitlementKey(status.Claims, env)
+
+	if opts.CloudWatchRegistry != nil && maxResources > 0 {
+		count, regErr := opts.CloudWatchRegistry.RegisterAndCount(opts.Context, entitlementKey, opts.SourceResourceARNs, evalTime)
+		if regErr != nil {
+			slog.Warn("Failed to synchronize distributed resource registry with CloudWatch",
+				"error", regErr,
+				"namespace", opts.CloudWatchRegistry.namespace,
+				"entitlement_key", entitlementKey,
+			)
+			if mode == "strict" && IsDeterministicLicenseError(regErr) {
+				return status, regErr
+			}
+		}
+		activeResources = count
+	} else if opts.ResourceTracker != nil {
 		activeResources = opts.ResourceTracker.Count()
 	} else {
 		activeResources = len(opts.SourceResourceARNs)
 	}
 
 	if maxResources > 0 && activeResources > maxResources {
-		quotaMsg := fmt.Sprintf("COMMERCIAL LICENSE RESOURCE QUOTA EXCEEDED: Active monitored resources (%d) exceeds authorized quota (%d)",
-			activeResources, maxResources)
-		slog.Warn(quotaMsg, "active_resources", activeResources, "max_resources", maxResources, "contact", "licensing@divmora.com")
+		quotaMsg := fmt.Sprintf("COMMERCIAL LICENSE RESOURCE QUOTA EXCEEDED: Active monitored resources (%d) exceeds authorized quota (%d) for entitlement '%s'",
+			activeResources, maxResources, entitlementKey)
+		slog.Warn(quotaMsg, "active_resources", activeResources, "max_resources", maxResources, "entitlement_key", entitlementKey, "contact", "licensing@divmora.com")
 		status.Valid = false
 		status.StatusReason = "resource_quota_exceeded"
 		status.Message = quotaMsg
@@ -717,6 +732,7 @@ func PreflightEnforce(opts EnforcementOptions) (*ValidationStatus, error) {
 	opts.SourceResourceARNs = nil
 	opts.ExercisedFeatures = nil
 	opts.BatchRecordCount = 0
+	opts.CloudWatchRegistry = nil
 	return Enforce(opts)
 }
 

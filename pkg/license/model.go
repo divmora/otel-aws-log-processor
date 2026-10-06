@@ -504,6 +504,9 @@ var (
 
 	// ErrResourceNotAllowed is returned when a resource ARN is not authorized by Scope.Resources.
 	ErrResourceNotAllowed = liblicense.ErrResourceNotAllowed
+
+	// ErrCloudWatchRegistryAccessDenied is returned when CloudWatch API access is denied during registry operations.
+	ErrCloudWatchRegistryAccessDenied = errors.New("access denied to CloudWatch distributed resource registry")
 )
 
 // Resource quota and scope structured error types.
@@ -643,6 +646,32 @@ func ResolveCentralMetricsRegion(c *Claims) string {
 	return "us-east-1"
 }
 
+// ResolveEntitlementKey determines the canonical scoping dimension for resource registry metrics.
+// Resolution Order:
+// 1. Metadata["subscription_id"] (Explicit subscription lineage across annual renewals - Strategy 1)
+// 2. Customer.OrgID              (Organization-level tenant lineage - Strategy 1)
+// 3. Claims.ID                   (Unique license token UUID - Strategy 2 fallback)
+// 4. "bsl1.1-free"               (Non-production / community exemption fallback)
+func ResolveEntitlementKey(c *Claims, env string) string {
+	if c != nil {
+		if c.Metadata != nil {
+			if subID := strings.TrimSpace(c.Metadata["subscription_id"]); subID != "" {
+				return subID
+			}
+		}
+		if orgID := strings.TrimSpace(c.Customer.OrgID); orgID != "" {
+			return orgID
+		}
+		if c.ID != "" {
+			return c.ID
+		}
+	}
+	if IsNonProductionEnvironment(env) {
+		return "bsl1.1-free"
+	}
+	return "unlicensed"
+}
+
 // GetCurrentRegion returns the executing AWS region resolved from standard AWS execution environment variables.
 // Defaults strictly to "us-east-1" if unset.
 func GetCurrentRegion() string {
@@ -718,6 +747,7 @@ func IsDeterministicLicenseError(err error) bool {
 		errors.Is(err, ErrLicenseRevoked) ||
 		errors.Is(err, ErrResourceQuotaExceeded) ||
 		errors.Is(err, ErrResourceNotAllowed) ||
+		errors.Is(err, ErrCloudWatchRegistryAccessDenied) ||
 		errors.Is(err, liblicense.ErrExpired) ||
 		errors.Is(err, liblicense.ErrNotYetValid) ||
 		errors.Is(err, liblicense.ErrProductMismatch) ||
@@ -735,7 +765,8 @@ func IsDeterministicLicenseError(err error) bool {
 		strings.Contains(msg, "ACCOUNT MISMATCH") ||
 		strings.Contains(msg, "RESOURCE QUOTA EXCEEDED") ||
 		strings.Contains(msg, "RESOURCE NOT ALLOWED") ||
-		strings.Contains(msg, "not authorized")
+		strings.Contains(msg, "not authorized") ||
+		strings.Contains(msg, "AccessDenied")
 }
 
 // MatchResourcePattern matches a resource ARN or identifier against a pattern.

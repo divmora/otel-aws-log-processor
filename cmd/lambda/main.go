@@ -35,9 +35,10 @@ var (
 	otlpClient      *sender.OTLPClient
 	quotaTracker    *license.QuotaTracker
 	resourceTracker *license.ResourceTracker
+	cwRegistry      *license.CloudWatchRegistry
 )
 
-func getCloudWatchClient(targetRegion string) license.CloudWatchMetricAPI {
+func getCloudWatchClientRaw(targetRegion string) *cloudwatch.Client {
 	cwMu.RLock()
 	client, ok := cwClients[targetRegion]
 	cwMu.RUnlock()
@@ -56,6 +57,20 @@ func getCloudWatchClient(targetRegion string) license.CloudWatchMetricAPI {
 	})
 	cwClients[targetRegion] = client
 	return client
+}
+
+func getCloudWatchClient(targetRegion string) license.CloudWatchMetricAPI {
+	return getCloudWatchClientRaw(targetRegion)
+}
+
+func getActiveResourceCount() int {
+	if cwRegistry != nil && cwRegistry.Count() > 0 {
+		return cwRegistry.Count()
+	}
+	if resourceTracker != nil {
+		return resourceTracker.Count()
+	}
+	return 0
 }
 
 func init() {
@@ -98,6 +113,9 @@ func init() {
 
 	// Initialize Container Resource Tracker
 	resourceTracker = license.NewResourceTracker()
+
+	// Initialize CloudWatch Distributed Resource Registry
+	cwRegistry = license.NewCloudWatchRegistry(getCloudWatchClientRaw(license.GetCurrentRegion()))
 
 	// Initialize Registry
 	registry = processor.NewRegistry()
@@ -177,7 +195,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 			"caller_account", callerAccount,
 			"action", failureAction,
 		)
-		license.EmitCloudWatchEMF(preflightStatus, env, 0, resourceTracker.Count(), quotaTracker.TotalBytesProcessed())
+		license.EmitCloudWatchEMF(preflightStatus, env, 0, getActiveResourceCount(), quotaTracker.TotalBytesProcessed())
 
 		if failureAction == "dlq" {
 			for _, rec := range sqsEvent.Records {
@@ -360,6 +378,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 		BatchRecordCount:   len(allEntries),
 		QuotaTracker:       quotaTracker,
 		ResourceTracker:    resourceTracker,
+		CloudWatchRegistry: cwRegistry,
 		BucketName:         lastBucket,
 		AuthoritativeTime:  authTime,
 	})
@@ -371,7 +390,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 				"caller_account", callerAccount,
 				"action", failureAction,
 			)
-			license.EmitMetrics(ctx, getCloudWatchClient, licStatus, env, len(allEntries), resourceTracker.Count(), quotaTracker.TotalBytesProcessed(), sourceResources)
+			license.EmitMetrics(ctx, getCloudWatchClient, licStatus, env, len(allEntries), getActiveResourceCount(), quotaTracker.TotalBytesProcessed(), sourceResources)
 
 			if failureAction == "dlq" {
 				for _, rec := range sqsEvent.Records {
@@ -401,7 +420,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 	}
 
 	// Emit CloudWatch Metric (asynchronous stdout EMF + cross-region PutMetricData if applicable)
-	license.EmitMetrics(ctx, getCloudWatchClient, licStatus, env, len(allEntries), resourceTracker.Count(), quotaTracker.TotalBytesProcessed(), sourceResources)
+	license.EmitMetrics(ctx, getCloudWatchClient, licStatus, env, len(allEntries), getActiveResourceCount(), quotaTracker.TotalBytesProcessed(), sourceResources)
 
 	logger.Info("Lambda execution completed", "failures", len(response.BatchItemFailures))
 	return response, nil

@@ -477,7 +477,8 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Effect: Allow
+              - Sid: AllowPutMetricData
+                Effect: Allow
                 Action:
                   - cloudwatch:PutMetricData
                 Resource: "*"
@@ -486,6 +487,13 @@ Resources:
                     cloudwatch:namespace:
                       - Divmora/LogProcessor
                       - Divmora/License
+                      - Divmora/OALP
+              - Sid: AllowRegistryMetricQueries
+                Effect: Allow
+                Action:
+                  - cloudwatch:GetMetricData
+                  - cloudwatch:ListMetrics
+                Resource: "*"
 
   # ----------------------------------------------------------------------------
   # AWS Lambda Function (OCI Custom Container Runtime)
