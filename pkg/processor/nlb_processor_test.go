@@ -94,6 +94,68 @@ func TestNLBAdapterToOTel(t *testing.T) {
 	}
 }
 
+func TestNLBAdapterToOTel_TCP(t *testing.T) {
+	entry := &parser.NLBLogEntry{
+		Type:           "tcp",
+		Version:        "2.0",
+		Time:           "2023-10-27T10:00:00.123456Z",
+		ELB:            "net/my-load-balancer/50dc6c495c0c9188",
+		ListenerID:     "listener/net/my-load-balancer/50dc6c495c0c9188/0467ef8c84b359db",
+		ClientIP:       "192.168.1.100",
+		ClientPort:     54321,
+		TargetIP:       "", // unrouted target
+		TargetPort:     0,
+		ConnectionTime: 1.5,
+		ReceivedBytes:  512,
+		SentBytes:      1024,
+	}
+
+	adapter := NLBAdapter{NLBLogEntry: entry}
+	record := adapter.ToOTel()
+
+	expectedBody := "tcp log for net/my-load-balancer/50dc6c495c0c9188"
+	if record.Body["stringValue"] != expectedBody {
+		t.Errorf("Body = %q, want %q", record.Body["stringValue"], expectedBody)
+	}
+
+	attrMap := make(map[string]model.OTelAttribute)
+	for _, attr := range record.Attributes {
+		attrMap[attr.Key] = attr
+	}
+
+	// Verify TCP specific attributes
+	if attr, ok := attrMap["network.transport"]; !ok || attr.Value.StringValue == nil || *attr.Value.StringValue != "tcp" {
+		t.Errorf("expected network.transport = tcp, got %+v", attr)
+	}
+	if attr, ok := attrMap["network.protocol.name"]; !ok || attr.Value.StringValue == nil || *attr.Value.StringValue != "tcp" {
+		t.Errorf("expected network.protocol.name = tcp, got %+v", attr)
+	}
+	if attr, ok := attrMap["aws.nlb.type"]; !ok || attr.Value.StringValue == nil || *attr.Value.StringValue != "tcp" {
+		t.Errorf("expected aws.nlb.type = tcp, got %+v", attr)
+	}
+	if attr, ok := attrMap["aws.nlb.received_bytes"]; !ok || attr.Value.IntValue == nil || *attr.Value.IntValue != "512" {
+		t.Errorf("expected aws.nlb.received_bytes = 512, got %+v", attr)
+	}
+	if attr, ok := attrMap["aws.nlb.sent_bytes"]; !ok || attr.Value.IntValue == nil || *attr.Value.IntValue != "1024" {
+		t.Errorf("expected aws.nlb.sent_bytes = 1024, got %+v", attr)
+	}
+
+	// Verify unrouted target does NOT add server attributes
+	if _, ok := attrMap["server.address"]; ok {
+		t.Error("server.address should be omitted when TargetIP is empty")
+	}
+	if _, ok := attrMap["server.port"]; ok {
+		t.Error("server.port should be omitted when TargetPort is 0")
+	}
+
+	// Verify TLS attributes are NOT present in TCP log
+	for _, tlsKey := range []string{"tls.cipher_suite", "tls.protocol.version", "tls.server.name", "aws.nlb.tls_handshake_time"} {
+		if _, ok := attrMap[tlsKey]; ok {
+			t.Errorf("unexpected TLS attribute %s in TCP log", tlsKey)
+		}
+	}
+}
+
 func TestNLBAdapterExtractResourceAttributes(t *testing.T) {
 	// Case 1: With ChosenCertARN (contains region/account)
 	entry1 := &parser.NLBLogEntry{

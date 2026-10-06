@@ -108,7 +108,10 @@ func (a *WAFAdapter) ToOTel() model.OTelLogRecord {
 
 	severityText := "INFO"
 	severityNumber := 9
-	if a.WAFLogEntry.Action == "BLOCK" {
+	if a.WAFLogEntry.ResponseCodeSent != nil && *a.WAFLogEntry.ResponseCodeSent >= 500 {
+		severityText = "ERROR"
+		severityNumber = 17
+	} else if a.WAFLogEntry.Action == "BLOCK" || (a.WAFLogEntry.ResponseCodeSent != nil && *a.WAFLogEntry.ResponseCodeSent >= 400) {
 		severityText = "WARN"
 		severityNumber = 13
 	}
@@ -164,6 +167,10 @@ func (a *WAFAdapter) BuildAttributes() []model.OTelAttribute {
 	model.AddAttr(&attrs, "url.query", req.Args)
 	model.AddAttr(&attrs, "network.protocol.version", req.HTTPVersion)
 	model.AddAttr(&attrs, "client.address", req.ClientIP)
+
+	if entry.ResponseCodeSent != nil {
+		model.AddIntAttr(&attrs, "http.response.status_code", *entry.ResponseCodeSent)
+	}
 
 	// User Agent from headers
 	for _, h := range req.Headers {

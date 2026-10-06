@@ -129,3 +129,90 @@ func TestWAFAdapterToOTel_ProcessedRules(t *testing.T) {
 		}
 	}
 }
+
+func TestWAFAdapterToOTel_ResponseCodeSent(t *testing.T) {
+	code200 := 200
+	code403 := 403
+	code500 := 500
+
+	tests := []struct {
+		name           string
+		action         string
+		responseCode   *int
+		wantStatus     string
+		wantSeverity   string
+		wantSeverityNo int
+	}{
+		{
+			name:           "Status 200 ALLOW",
+			action:         "ALLOW",
+			responseCode:   &code200,
+			wantStatus:     "200",
+			wantSeverity:   "INFO",
+			wantSeverityNo: 9,
+		},
+		{
+			name:           "Status 403 BLOCK",
+			action:         "BLOCK",
+			responseCode:   &code403,
+			wantStatus:     "403",
+			wantSeverity:   "WARN",
+			wantSeverityNo: 13,
+		},
+		{
+			name:           "Status 500 ERROR",
+			action:         "BLOCK",
+			responseCode:   &code500,
+			wantStatus:     "500",
+			wantSeverity:   "ERROR",
+			wantSeverityNo: 17,
+		},
+		{
+			name:           "Nil ResponseCodeSent with BLOCK action",
+			action:         "BLOCK",
+			responseCode:   nil,
+			wantStatus:     "",
+			wantSeverity:   "WARN",
+			wantSeverityNo: 13,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entry := &parser.WAFLogEntry{
+				Action:           tt.action,
+				ResponseCodeSent: tt.responseCode,
+				HTTPRequest: parser.HTTPRequest{
+					HTTPMethod: "GET",
+					URI:        "/path",
+				},
+			}
+
+			adapter := WAFAdapter{WAFLogEntry: entry}
+			record := adapter.ToOTel()
+
+			if record.SeverityText != tt.wantSeverity {
+				t.Errorf("SeverityText = %v, want %v", record.SeverityText, tt.wantSeverity)
+			}
+			if record.SeverityNumber != tt.wantSeverityNo {
+				t.Errorf("SeverityNumber = %v, want %v", record.SeverityNumber, tt.wantSeverityNo)
+			}
+
+			foundStatus := false
+			for _, attr := range record.Attributes {
+				if attr.Key == "http.response.status_code" {
+					foundStatus = true
+					if attr.Value.IntValue == nil || *attr.Value.IntValue != tt.wantStatus {
+						t.Errorf("http.response.status_code = %v, want %v", attr.Value.IntValue, tt.wantStatus)
+					}
+				}
+			}
+
+			if tt.wantStatus != "" && !foundStatus {
+				t.Errorf("expected http.response.status_code attribute with value %v, but was not found", tt.wantStatus)
+			} else if tt.wantStatus == "" && foundStatus {
+				t.Errorf("did not expect http.response.status_code attribute, but was found")
+			}
+		})
+	}
+}
