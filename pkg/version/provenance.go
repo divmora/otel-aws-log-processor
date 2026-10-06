@@ -86,8 +86,7 @@ func ResetReleaseVerificationPublicKey() {
 // GetReleaseVerificationPublicKey resolves the public key used to verify release tokens.
 // Resolution order:
 // 1. In-memory programmatic override (via SetReleaseVerificationPublicKey).
-// 2. DIVMORA_RELEASE_PUBLIC_KEY or DIVMORA_PUBLIC_KEY environment variable.
-// 3. Embedded DefaultReleasePublicKeyBase64.
+// 2. Embedded DefaultReleasePublicKeyBase64.
 func GetReleaseVerificationPublicKey() (ed25519.PublicKey, error) {
 	releaseKeyLock.RLock()
 	if releaseKeyOverride != nil {
@@ -96,13 +95,7 @@ func GetReleaseVerificationPublicKey() (ed25519.PublicKey, error) {
 	}
 	releaseKeyLock.RUnlock()
 
-	keyStr := os.Getenv("DIVMORA_RELEASE_PUBLIC_KEY")
-	if keyStr == "" {
-		keyStr = os.Getenv("DIVMORA_PUBLIC_KEY")
-	}
-	if keyStr == "" {
-		keyStr = DefaultReleasePublicKeyBase64
-	}
+	keyStr := DefaultReleasePublicKeyBase64
 
 	keyBytes, err := base64.StdEncoding.DecodeString(keyStr)
 	if err != nil {

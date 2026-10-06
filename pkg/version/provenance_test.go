@@ -351,6 +351,21 @@ func TestDefaultReleasePublicKey(t *testing.T) {
 	assert.Equal(t, version.DefaultReleasePublicKeyBase64, b64Key)
 }
 
+func TestGetReleaseVerificationPublicKey_IgnoresEnvOverrides(t *testing.T) {
+	pub, _ := generateTestReleaseKeyPair(t)
+	fakeKeyB64 := base64.StdEncoding.EncodeToString(pub)
+
+	t.Setenv("DIVMORA_RELEASE_PUBLIC_KEY", fakeKeyB64)
+	t.Setenv("DIVMORA_PUBLIC_KEY", fakeKeyB64)
+
+	resolvedPub, err := version.GetReleaseVerificationPublicKey()
+	require.NoError(t, err)
+
+	b64Key := base64.StdEncoding.EncodeToString(resolvedPub)
+	assert.Equal(t, version.DefaultReleasePublicKeyBase64, b64Key)
+	assert.NotEqual(t, fakeKeyB64, b64Key)
+}
+
 func TestParseReleasePrivateKeyAndSigning(t *testing.T) {
 	pub, priv := generateTestReleaseKeyPair(t)
 

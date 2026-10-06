@@ -26,10 +26,6 @@ import (
 // Extra non-production environments supplementing liblicense.DefaultNonProductionEnvironments.
 var extraNonProdEnvironments = []string{"preview", "poc"}
 
-// Production environment identifiers.
-var prodKeywords = []string{
-	"production", "prod", "live", "prd",
-}
 
 // IsNonProductionEnvironment returns true if the normalized environment string indicates non-production.
 // It evaluates compliance using liblicense's standard Non-Production Additional Use Grant terms.
@@ -178,7 +174,48 @@ var (
 	cfParquetPattern    = regexp.MustCompile(`(?:^|/)([A-Z0-9]{8,32})[._]`)
 	wafKeyPattern       = regexp.MustCompile(`aws-waf-logs-([^/]+)`)
 	awsLogsAccountRegex = regexp.MustCompile(`(?:^|/)AWSLogs/(\d{12})/`)
+	prodKeywordRegex    = regexp.MustCompile(`(?i)(?:^|[-_./:])(production|prod|live|prd)(?:$|[-_./:])`)
 )
+
+// matchesProdKeyword checks if a string contains production indicators
+// (production, prod, live, prd) as complete tokens or delimited by -, _, ., /, :
+func matchesProdKeyword(s string) (bool, string) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false, ""
+	}
+	if m := prodKeywordRegex.FindStringSubmatch(s); len(m) >= 2 {
+		return true, strings.ToLower(m[1])
+	}
+	return false, ""
+}
+
+// DetectProductionIndicators inspects runtime metadata (S3 bucket name, AWS_LAMBDA_FUNCTION_NAME,
+// and Lambda context ARN) to detect whether the workload belongs to a production system.
+func DetectProductionIndicators(opts EnforcementOptions) (bool, string) {
+	// 1. Check S3 Bucket Name
+	if matched, kw := matchesProdKeyword(opts.BucketName); matched {
+		return true, fmt.Sprintf("S3 bucket name '%s' contains production indicator '%s'", opts.BucketName, kw)
+	}
+
+	// 2. Check AWS Lambda Function Name (immutable environment variable injected by AWS Lambda runtime)
+	if fnName := strings.TrimSpace(os.Getenv("AWS_LAMBDA_FUNCTION_NAME")); fnName != "" {
+		if matched, kw := matchesProdKeyword(fnName); matched {
+			return true, fmt.Sprintf("Lambda function name '%s' contains production indicator '%s'", fnName, kw)
+		}
+	}
+
+	// 3. Check Invoked Function ARN from Lambda context
+	if opts.Context != nil {
+		if lc, ok := lambdacontext.FromContext(opts.Context); ok && lc != nil {
+			if matched, kw := matchesProdKeyword(lc.InvokedFunctionArn); matched {
+				return true, fmt.Sprintf("Invoked Lambda function ARN '%s' contains production indicator '%s'", lc.InvokedFunctionArn, kw)
+			}
+		}
+	}
+
+	return false, ""
+}
 
 // ExtractResourceFromAttributes extracts the canonical AWS resource ARN and short identifier
 // from OpenTelemetry resource attributes.
@@ -394,60 +431,85 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 
 	// 2. Non-Production Exemption Path
 	if isNonProd || entitlement.Authorized {
-		// Heuristic check: Bucket name matches production keywords
-		if opts.BucketName != "" {
-			lowerBucket := strings.ToLower(opts.BucketName)
-			for _, pk := range prodKeywords {
-				if strings.Contains(lowerBucket, pk) {
-					slog.Warn("SUSPECTED PRODUCTION MISCONFIGURATION: Environment is declared as non-production, but S3 log bucket name contains production indicators.",
+		hasProd, indicatorReason := DetectProductionIndicators(opts)
+		if hasProd {
+			// Check if a commercial license token is provided despite non-prod declaration
+			token, _ := ResolveToken(opts.LicenseKey, opts.LicenseFile)
+			if token == "" {
+				msg := fmt.Sprintf("COMMERCIAL LICENSE REQUIRED: Environment declared as non-production '%s', but production indicators were detected (%s). Please obtain a license from licensing@divmora.com", env, indicatorReason)
+				if mode == "strict" {
+					slog.Warn("COMMERCIAL LICENSE REQUIRED",
 						"environment", env,
-						"bucket", opts.BucketName,
-						"hint", "Ensure production workloads are licensed under DIVMORA commercial terms",
+						"indicator", indicatorReason,
+						"contact", "licensing@divmora.com",
 					)
-					break
+					return &ValidationStatus{
+						Valid:        false,
+						StatusReason: "unlicensed_production",
+						Message:      msg,
+					}, fmt.Errorf("%s: %w", msg, ErrCommercialLicenseRequired)
+				}
+				slog.Warn("SUSPECTED PRODUCTION MISCONFIGURATION: Environment is declared as non-production, but production indicators were detected.",
+					"environment", env,
+					"indicator", indicatorReason,
+					"hint", "Ensure production workloads are licensed under DIVMORA commercial terms",
+				)
+				return &ValidationStatus{
+					Valid:        true,
+					StatusReason: "suspected_production",
+					Message:      msg,
+				}, nil
+			}
+			// If a commercial token is provided, fall through to commercial license verification (Step 3)
+		} else {
+			quotaExceeded := false
+			var quotaReason string
+
+			// Fair-use quota checks
+			if opts.QuotaTracker != nil && opts.BatchRecordCount > 0 {
+				// Check single-invocation density
+				if densityExceeded, reason := opts.QuotaTracker.CheckBatchDensity(opts.BatchRecordCount); densityExceeded {
+					quotaExceeded = true
+					quotaReason = reason
+					slog.Warn("NON-PRODUCTION FAIR-USE DENSITY CEILING EXCEEDED: Single log archive contains production-scale record density",
+						"reason", reason,
+						"records", opts.BatchRecordCount,
+					)
+				}
+
+				// Check container cumulative quota
+				if containerExceeded, total, reason := opts.QuotaTracker.RecordAndCheckContainerQuota(opts.BatchRecordCount); containerExceeded {
+					quotaExceeded = true
+					quotaReason = reason
+					slog.Warn("NON-PRODUCTION FAIR-USE CONTAINER CEILING EXCEEDED: Cumulative container volume exceeds fair-use limit",
+						"reason", reason,
+						"cumulative_records", total,
+					)
 				}
 			}
-		}
 
-		quotaExceeded := false
-		var quotaReason string
-
-		// Fair-use quota checks
-		if opts.QuotaTracker != nil && opts.BatchRecordCount > 0 {
-			// Check single-invocation density
-			if densityExceeded, reason := opts.QuotaTracker.CheckBatchDensity(opts.BatchRecordCount); densityExceeded {
-				quotaExceeded = true
-				quotaReason = reason
-				slog.Warn("NON-PRODUCTION FAIR-USE DENSITY CEILING EXCEEDED: Single log archive contains production-scale record density",
-					"reason", reason,
-					"records", opts.BatchRecordCount,
-				)
+			statusReason := "non_prod_free"
+			msg := fmt.Sprintf("Non-production environment '%s' authorized free of charge under BSL 1.1 Additional Use Grant", env)
+			if quotaExceeded {
+				statusReason = "quota_exceeded"
+				msg = fmt.Sprintf("Non-production environment '%s' active, but fair-use volume ceiling was exceeded: %s", env, quotaReason)
+				if mode == "strict" {
+					return &ValidationStatus{
+						Valid:         false,
+						StatusReason:  statusReason,
+						QuotaExceeded: true,
+						Message:       msg,
+					}, fmt.Errorf("%s: %w", msg, ErrResourceQuotaExceeded)
+				}
 			}
 
-			// Check container cumulative quota
-			if containerExceeded, total, reason := opts.QuotaTracker.RecordAndCheckContainerQuota(opts.BatchRecordCount); containerExceeded {
-				quotaExceeded = true
-				quotaReason = reason
-				slog.Warn("NON-PRODUCTION FAIR-USE CONTAINER CEILING EXCEEDED: Cumulative container volume exceeds fair-use limit",
-					"reason", reason,
-					"cumulative_records", total,
-				)
-			}
+			return &ValidationStatus{
+				Valid:         true,
+				StatusReason:  statusReason,
+				QuotaExceeded: quotaExceeded,
+				Message:       msg,
+			}, nil
 		}
-
-		statusReason := "non_prod_free"
-		msg := fmt.Sprintf("Non-production environment '%s' authorized free of charge under BSL 1.1 Additional Use Grant", env)
-		if quotaExceeded {
-			statusReason = "quota_exceeded"
-			msg = fmt.Sprintf("Non-production environment '%s' active, but fair-use volume ceiling was exceeded: %s", env, quotaReason)
-		}
-
-		return &ValidationStatus{
-			Valid:         true,
-			StatusReason:  statusReason,
-			QuotaExceeded: quotaExceeded,
-			Message:       msg,
-		}, nil
 	}
 
 	// 3. Production Path: Requires Valid Commercial Token
@@ -705,6 +767,7 @@ func BuildEMFPayload(status *ValidationStatus, env string, recordsProcessed int,
 
 	violations := 0
 	if status != nil && (status.StatusReason == "unlicensed_production" ||
+		status.StatusReason == "suspected_production" ||
 		status.StatusReason == "revoked" ||
 		status.StatusReason == "feature_not_entitled" ||
 		status.StatusReason == "resource_quota_exceeded" ||

@@ -134,7 +134,7 @@ func DefaultValidatorOptions() []liblicense.ValidatorOption {
 	var opts []liblicense.ValidatorOption
 	opts = append(opts,
 		liblicense.WithProduct("otel-aws-log-processor"),
-		liblicense.WithAllowEnvKeyOverride(true),
+		liblicense.WithAllowEnvKeyOverride(false),
 		liblicense.WithMaxClockDrift(15*time.Minute),
 	)
 

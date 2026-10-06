@@ -9,6 +9,13 @@ import (
 // DefaultPublicKeyBase64 is the embedded production Ed25519 public verification key for DIVMORA Technologies.
 const DefaultPublicKeyBase64 = "o5nIs/8K/bCGz6jRB33Ig1h0ONr37yvVHpddzNnL46U="
 
+func init() {
+	// Treat the embedded public verification key as an immutable root of trust.
+	// Disable environment-based public key overrides (e.g., DIVMORA_PUBLIC_KEY, DIVMORA_PUBLIC_KEYS_PEM)
+	// to prevent runtime trust root spoofing.
+	liblicense.SetAllowEnvKeyOverride(false)
+}
+
 // SetVerificationPublicKey overrides the active verification key (primarily used in automated tests).
 func SetVerificationPublicKey(key ed25519.PublicKey) {
 	liblicense.SetVerificationPublicKey(key)
@@ -24,16 +31,28 @@ func ResetVerificationPublicKey() {
 // GetVerificationKeyRing resolves the KeyRing containing trusted public verification keys.
 // Resolution order:
 // 1. In-memory programmatic override (via SetVerificationPublicKey or SetVerificationKeyRing).
-// 2. DIVMORA_PUBLIC_KEYS_PEM environment variable (multi-key PKIX PEM bundle).
-// 3. DIVMORA_PUBLIC_KEY environment variable (base64-encoded single key or PEM).
-// 4. DIVMORA_PUBLIC_KEY_FILE environment variable.
-// 5. /etc/divmora/public.pem default file.
-// 6. Embedded DefaultPublicKeyBase64.
+// 2. Embedded DefaultPublicKeyBase64.
+// Environment variable overrides (DIVMORA_PUBLIC_KEY, etc.) are strictly rejected to prevent trust root spoofing.
 func GetVerificationKeyRing() (*liblicense.KeyRing, error) {
-	return liblicense.ResolveKeyRing(DefaultPublicKeyBase64)
+	resolved, err := liblicense.ResolveKeyRingWithSource(DefaultPublicKeyBase64)
+	if err != nil {
+		return nil, err
+	}
+	return resolved.KeyRing, nil
 }
 
 // GetVerificationPublicKey resolves the primary Ed25519 public key used to verify license tokens.
+// Resolution order:
+// 1. In-memory programmatic override (via SetVerificationPublicKey or SetVerificationKeyRing).
+// 2. Embedded DefaultPublicKeyBase64.
+// Environment variable overrides (DIVMORA_PUBLIC_KEY, etc.) are strictly rejected.
 func GetVerificationPublicKey() (ed25519.PublicKey, error) {
-	return liblicense.ResolvePublicKey(DefaultPublicKeyBase64)
+	ring, err := GetVerificationKeyRing()
+	if err != nil {
+		return nil, err
+	}
+	if ring.Primary() == nil {
+		return nil, liblicense.ErrMissingPublicKey
+	}
+	return ring.Primary().PublicKey, nil
 }

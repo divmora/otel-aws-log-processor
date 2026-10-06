@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-lambda-go/lambdacontext"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	liblicense "github.com/divmora/license-go/pkg/license"
 	"github.com/divmora/otel-aws-log-processor/pkg/model"
@@ -2562,3 +2563,433 @@ func TestLimits_QuotasAndAccessors(t *testing.T) {
 	})
 }
 
+func TestPublicKeyOverrideHardening(t *testing.T) {
+	// Generate an untrusted rogue Ed25519 key pair
+	roguePub, roguePriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("failed to generate rogue key: %v", err)
+	}
+	roguePubB64 := base64.StdEncoding.EncodeToString(roguePub)
+
+	// Attempt to override the embedded public key using environment variables
+	t.Setenv("DIVMORA_PUBLIC_KEY", roguePubB64)
+	t.Setenv("DIVMORA_PUBLIC_KEYS_PEM", roguePubB64)
+
+	// Ensure caches are cleared
+	ResetDefaultValidator()
+	ResetVerificationPublicKey()
+
+	// 1. Verify GetVerificationPublicKey() returns the embedded key, NOT the rogue key
+	pubKey, err := GetVerificationPublicKey()
+	if err != nil {
+		t.Fatalf("GetVerificationPublicKey failed: %v", err)
+	}
+	if string(pubKey) == string(roguePub) {
+		t.Fatal("SECURITY VULNERABILITY: GetVerificationPublicKey() accepted attacker key from DIVMORA_PUBLIC_KEY environment variable")
+	}
+
+	// 2. Verify GetVerificationKeyRing() returns the embedded key
+	ring, err := GetVerificationKeyRing()
+	if err != nil {
+		t.Fatalf("GetVerificationKeyRing failed: %v", err)
+	}
+	if ring.Primary() == nil || string(ring.Primary().PublicKey) == string(roguePub) {
+		t.Fatal("SECURITY VULNERABILITY: GetVerificationKeyRing() accepted attacker key from DIVMORA_PUBLIC_KEY environment variable")
+	}
+
+	// 3. Verify that a license token signed with the rogue key FAILS cryptographic verification
+	now := time.Now().UTC()
+	claims := &Claims{
+		ID: "lic_forged_enterprise",
+		Customer: Customer{
+			Name: "Attacker Organization",
+		},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierEnterprise,
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+	}
+	forgedToken := signTestToken(claims, roguePriv)
+
+	status, err := ParseAndVerifyAt(forgedToken, nil, now)
+	if err == nil && (status != nil && status.Valid) {
+		t.Fatal("SECURITY VULNERABILITY: ParseAndVerifyAt accepted forged token signed with rogue key via DIVMORA_PUBLIC_KEY")
+	}
+
+	// 4. Verify programmatic override for tests via SetVerificationPublicKey still works
+	SetVerificationPublicKey(testPubKey)
+	defer ResetVerificationPublicKey()
+
+	testToken := signTestToken(claims, testPrivKey)
+	validStatus, err := ParseAndVerifyAt(testToken, nil, now)
+	if err != nil || validStatus == nil || !validStatus.Valid {
+		t.Fatalf("expected programmatic override to succeed, got err: %v", err)
+	}
+}
+
+func TestDetectProductionIndicators(t *testing.T) {
+	tests := []struct {
+		name          string
+		opts          EnforcementOptions
+		envLambdaFn   string
+		wantMatched   bool
+		wantIndicator string
+	}{
+		// S3 Bucket matching
+		{
+			name:          "BucketWithProdPrefix",
+			opts:          EnforcementOptions{BucketName: "prod-access-logs"},
+			wantMatched:   true,
+			wantIndicator: "prod",
+		},
+		{
+			name:          "BucketWithProdSuffix",
+			opts:          EnforcementOptions{BucketName: "my-app-prod"},
+			wantMatched:   true,
+			wantIndicator: "prod",
+		},
+		{
+			name:          "BucketWithProdDelimited",
+			opts:          EnforcementOptions{BucketName: "company-prod-alb-logs"},
+			wantMatched:   true,
+			wantIndicator: "prod",
+		},
+		{
+			name:          "BucketWithProduction",
+			opts:          EnforcementOptions{BucketName: "production-waf-logs"},
+			wantMatched:   true,
+			wantIndicator: "production",
+		},
+		{
+			name:          "BucketWithLive",
+			opts:          EnforcementOptions{BucketName: "live-traffic-bucket"},
+			wantMatched:   true,
+			wantIndicator: "live",
+		},
+		{
+			name:          "BucketWithPrdDot",
+			opts:          EnforcementOptions{BucketName: "api.prd.logs"},
+			wantMatched:   true,
+			wantIndicator: "prd",
+		},
+		// Benign non-prod substrings (must NOT match)
+		{
+			name:        "BenignProductCatalog",
+			opts:        EnforcementOptions{BucketName: "product-catalog-logs"},
+			wantMatched: false,
+		},
+		{
+			name:        "BenignDeliveryService",
+			opts:        EnforcementOptions{BucketName: "delivery-service-alb"},
+			wantMatched: false,
+		},
+		{
+			name:        "BenignReproduction",
+			opts:        EnforcementOptions{BucketName: "reproduction-logs"},
+			wantMatched: false,
+		},
+		{
+			name:        "BenignDevBucket",
+			opts:        EnforcementOptions{BucketName: "my-dev-bucket"},
+			wantMatched: false,
+		},
+		{
+			name:        "BenignStagingBucket",
+			opts:        EnforcementOptions{BucketName: "staging-alb-logs"},
+			wantMatched: false,
+		},
+		// AWS Lambda Function Name
+		{
+			name:          "LambdaFunctionNameProd",
+			envLambdaFn:   "otel-log-processor-prod",
+			wantMatched:   true,
+			wantIndicator: "prod",
+		},
+		{
+			name:          "LambdaFunctionNameProduction",
+			envLambdaFn:   "production-log-processor",
+			wantMatched:   true,
+			wantIndicator: "production",
+		},
+		{
+			name:        "LambdaFunctionNameDev",
+			envLambdaFn: "processor-dev",
+			wantMatched: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.envLambdaFn != "" {
+				t.Setenv("AWS_LAMBDA_FUNCTION_NAME", tc.envLambdaFn)
+			} else {
+				t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "")
+			}
+
+			matched, reason := DetectProductionIndicators(tc.opts)
+			if matched != tc.wantMatched {
+				t.Errorf("DetectProductionIndicators() matched = %v, want %v (reason: %s)", matched, tc.wantMatched, reason)
+			}
+			if tc.wantMatched && tc.wantIndicator != "" && !strings.Contains(reason, tc.wantIndicator) {
+				t.Errorf("expected reason to contain '%s', got '%s'", tc.wantIndicator, reason)
+			}
+		})
+	}
+
+	// Context ARN matching
+	t.Run("LambdaContextARNProd", func(t *testing.T) {
+		t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "")
+		lc := &lambdacontext.LambdaContext{
+			InvokedFunctionArn: "arn:aws:lambda:us-east-1:123456789012:function:processor-prod",
+		}
+		ctx := lambdacontext.NewContext(context.Background(), lc)
+		opts := EnforcementOptions{Context: ctx}
+
+		matched, reason := DetectProductionIndicators(opts)
+		if !matched {
+			t.Errorf("expected matched=true for prod ARN, got false")
+		}
+		if !strings.Contains(reason, "prod") {
+			t.Errorf("expected reason to contain 'prod', got %s", reason)
+		}
+	})
+}
+
+func TestEnforce_EnvironmentVariableSpoofing_StrictMode(t *testing.T) {
+	// 1. Spoofing via BucketName in strict mode without license
+	opts := EnforcementOptions{
+		Environment:     "dev",
+		BucketName:      "company-prod-alb-logs",
+		EnforcementMode: "strict",
+	}
+
+	status, err := Enforce(opts)
+	if err == nil {
+		t.Fatal("expected error in strict mode when production indicators detected, got nil")
+	}
+	if !errors.Is(err, ErrCommercialLicenseRequired) {
+		t.Errorf("expected ErrCommercialLicenseRequired, got: %v", err)
+	}
+	if status == nil || status.Valid {
+		t.Errorf("expected status.Valid=false, got: %v", status)
+	}
+	if status.StatusReason != "unlicensed_production" {
+		t.Errorf("expected StatusReason=unlicensed_production, got: %s", status.StatusReason)
+	}
+
+	// 2. Spoofing via AWS_LAMBDA_FUNCTION_NAME in strict mode
+	t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "otel-processor-prod")
+	opts2 := EnforcementOptions{
+		Environment:     "development",
+		BucketName:      "my-dev-bucket",
+		EnforcementMode: "strict",
+	}
+
+	status2, err2 := Enforce(opts2)
+	if err2 == nil {
+		t.Fatal("expected error in strict mode when Lambda function name has prod indicator, got nil")
+	}
+	if !errors.Is(err2, ErrCommercialLicenseRequired) {
+		t.Errorf("expected ErrCommercialLicenseRequired, got: %v", err2)
+	}
+	if status2 == nil || status2.Valid {
+		t.Errorf("expected status.Valid=false")
+	}
+
+	// 3. Spoofing via InvokedFunctionArn in strict mode
+	t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "")
+	lc := &lambdacontext.LambdaContext{
+		InvokedFunctionArn: "arn:aws:lambda:us-east-1:123456789012:function:app-production-handler",
+	}
+	ctx := lambdacontext.NewContext(context.Background(), lc)
+	opts3 := EnforcementOptions{
+		Context:         ctx,
+		Environment:     "staging",
+		EnforcementMode: "strict",
+	}
+
+	status3, err3 := Enforce(opts3)
+	if err3 == nil {
+		t.Fatal("expected error in strict mode when Context ARN has production indicator, got nil")
+	}
+	if !errors.Is(err3, ErrCommercialLicenseRequired) {
+		t.Errorf("expected ErrCommercialLicenseRequired, got: %v", err3)
+	}
+	if status3 == nil || status3.Valid {
+		t.Errorf("expected status.Valid=false")
+	}
+}
+
+func TestEnforce_EnvironmentVariableSpoofing_WarnMode(t *testing.T) {
+	opts := EnforcementOptions{
+		Environment:     "dev",
+		BucketName:      "company-prod-alb-logs",
+		EnforcementMode: "warn",
+	}
+
+	status, err := Enforce(opts)
+	if err != nil {
+		t.Fatalf("expected nil error in warn mode, got: %v", err)
+	}
+	if !status.Valid {
+		t.Errorf("expected status.Valid=true in warn mode")
+	}
+	if status.StatusReason != "suspected_production" {
+		t.Errorf("expected StatusReason=suspected_production, got: %s", status.StatusReason)
+	}
+
+	// Verify EMF metrics reflect license violation
+	emf := BuildEMFPayload(status, "dev", 100)
+	if emf == nil {
+		t.Fatal("expected non-nil EMF payload")
+	}
+	if emf["LicenseViolations"] != 1 {
+		t.Errorf("expected LicenseViolations=1 for suspected_production, got: %v", emf["LicenseViolations"])
+	}
+	if emf["Status"] != "suspected_production" {
+		t.Errorf("expected Status=suspected_production, got: %v", emf["Status"])
+	}
+
+	// Verify OpenTelemetry resource attributes reflect suspected_production
+	attrs := AppendLicenseAttributes(nil, status, "dev", "123456789012")
+	var statusAttr string
+	for _, a := range attrs {
+		if a.Key == "divmora.license.status" && a.Value.StringValue != nil {
+			statusAttr = *a.Value.StringValue
+		}
+	}
+	if statusAttr != "suspected_production" {
+		t.Errorf("expected divmora.license.status=suspected_production, got: %s", statusAttr)
+	}
+}
+
+func TestEnforce_EnvironmentVariableSpoofing_CommercialLicenseProvided(t *testing.T) {
+	SetVerificationPublicKey(testPubKey)
+	defer ResetVerificationPublicKey()
+
+	now := time.Now().UTC()
+	claims := &Claims{
+		ID: "lic_comm_123",
+		Customer: Customer{
+			Name: "Acme Corp",
+		},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierEnterprise,
+		Scope:     &Scope{Accounts: []string{"123456789012"}},
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+	}
+	token := signTestToken(claims, testPrivKey)
+
+	// Even if declared as "dev", when production indicators are present and a commercial token is provided,
+	// it evaluates and verifies against the commercial token
+	opts := EnforcementOptions{
+		Environment:     "dev",
+		BucketName:      "company-prod-alb-logs",
+		LicenseKey:      token,
+		CallerAccountID: "123456789012",
+		EnforcementMode: "strict",
+		EvaluationTime:  now,
+	}
+
+	status, err := Enforce(opts)
+	if err != nil {
+		t.Fatalf("unexpected error with valid commercial token: %v", err)
+	}
+	if !status.Valid {
+		t.Errorf("expected valid=true with valid commercial token")
+	}
+	if status.StatusReason != "valid" {
+		t.Errorf("expected status=valid, got: %s", status.StatusReason)
+	}
+}
+
+func TestEnforce_NonProductionFairUseStrictCeiling(t *testing.T) {
+	quotaTracker := NewQuotaTracker()
+
+	// 1. Single-batch density ceiling exceeded in strict mode
+	denseOpts := EnforcementOptions{
+		Environment:      "development",
+		BatchRecordCount: 15_000, // exceeds 10,000 ceiling
+		QuotaTracker:     quotaTracker,
+		EnforcementMode:  "strict",
+	}
+
+	status, err := Enforce(denseOpts)
+	if err == nil {
+		t.Fatal("expected error in strict mode when fair-use density is exceeded, got nil")
+	}
+	if !errors.Is(err, ErrResourceQuotaExceeded) {
+		t.Errorf("expected ErrResourceQuotaExceeded, got: %v", err)
+	}
+	if status == nil || status.Valid {
+		t.Errorf("expected status.Valid=false")
+	}
+	if !status.QuotaExceeded {
+		t.Errorf("expected QuotaExceeded=true")
+	}
+
+	// 2. Container cumulative quota exceeded in strict mode
+	quotaTracker2 := &QuotaTracker{
+		maxBatchRecords:     10_000,
+		maxContainerRecords: 1_000,
+	}
+	quotaTracker2.RecordAndCheckContainerQuota(1_500)
+
+	contOpts := EnforcementOptions{
+		Environment:      "test",
+		BatchRecordCount: 100,
+		QuotaTracker:     quotaTracker2,
+		EnforcementMode:  "strict",
+	}
+
+	status2, err2 := Enforce(contOpts)
+	if err2 == nil {
+		t.Fatal("expected error in strict mode when container quota exceeded, got nil")
+	}
+	if !errors.Is(err2, ErrResourceQuotaExceeded) {
+		t.Errorf("expected ErrResourceQuotaExceeded, got: %v", err2)
+	}
+	if status2 == nil || status2.Valid {
+		t.Errorf("expected status.Valid=false")
+	}
+
+	// 3. Normal non-production batch within limits in strict mode
+	normalOpts := EnforcementOptions{
+		Environment:      "development",
+		BatchRecordCount: 500,
+		QuotaTracker:     NewQuotaTracker(),
+		EnforcementMode:  "strict",
+	}
+
+	status3, err3 := Enforce(normalOpts)
+	if err3 != nil {
+		t.Fatalf("unexpected error for normal non-prod batch in strict mode: %v", err3)
+	}
+	if !status3.Valid {
+		t.Errorf("expected Valid=true")
+	}
+	if status3.StatusReason != "non_prod_free" {
+		t.Errorf("expected StatusReason=non_prod_free, got: %s", status3.StatusReason)
+	}
+}
+
+func TestPreflightEnforce_EnvironmentVariableSpoofing(t *testing.T) {
+	t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "otel-processor-prod")
+
+	opts := EnforcementOptions{
+		Environment:     "dev",
+		EnforcementMode: "strict",
+	}
+
+	status, err := PreflightEnforce(opts)
+	if err == nil {
+		t.Fatal("expected PreflightEnforce to fail in strict mode when Lambda function has prod indicator")
+	}
+	if !errors.Is(err, ErrCommercialLicenseRequired) {
+		t.Errorf("expected ErrCommercialLicenseRequired, got: %v", err)
+	}
+	if status == nil || status.Valid {
+		t.Errorf("expected status.Valid=false")
+	}
+}
