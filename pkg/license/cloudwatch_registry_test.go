@@ -633,13 +633,6 @@ func TestResolveRegistryRegion(t *testing.T) {
 	if reg := ResolveRegistryRegion(claimsGlobalCustom); reg != "ap-southeast-1" {
 		t.Errorf("got %s, want ap-southeast-1", reg)
 	}
-
-	// 5. Environment variable override
-	t.Setenv("DIVMORA_LICENSE_REGISTRY_REGION", "sa-east-1")
-	if reg := ResolveRegistryRegion(nil); reg != "sa-east-1" {
-		t.Errorf("got %s, want sa-east-1 from env override", reg)
-	}
-	t.Setenv("DIVMORA_LICENSE_REGISTRY_REGION", "")
 }
 
 func TestPublishCrossRegionMetrics_WithProject(t *testing.T) {

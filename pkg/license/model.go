@@ -654,7 +654,6 @@ func ResolveCentralMetricsRegion(c *Claims) string {
 // If the license token specifies a global registry (Metadata["registry_scope"] == "global")
 // or explicitly defines a registry region (Metadata["registry_region"]), that centralized region is used.
 // Otherwise, it defaults to the local executing region (GetCurrentRegion()) for zero-latency regional isolation.
-// For non-production or testing, the DIVMORA_LICENSE_REGISTRY_REGION environment variable may override this.
 func ResolveRegistryRegion(c *Claims) string {
 	if c != nil && c.Metadata != nil {
 		if r := strings.TrimSpace(c.Metadata["registry_region"]); r != "" {
@@ -663,9 +662,6 @@ func ResolveRegistryRegion(c *Claims) string {
 		if strings.EqualFold(strings.TrimSpace(c.Metadata["registry_scope"]), "global") {
 			return ResolveCentralMetricsRegion(c)
 		}
-	}
-	if envReg := strings.TrimSpace(os.Getenv("DIVMORA_LICENSE_REGISTRY_REGION")); envReg != "" {
-		return envReg
 	}
 	return GetCurrentRegion()
 }
