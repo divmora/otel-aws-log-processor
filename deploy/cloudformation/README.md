@@ -213,6 +213,7 @@ In each external source account:
 
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
+| `ProjectName` | String | `""` | Optional project, application, or team identifier (e.g. `payments`, `analytics`) disambiguating resource names for multi-project deployments in the same AWS account. |
 | `EnvironmentName` | String | `prod` | Deployment environment name (`dev`, `staging`, `prod`). |
 | `ImageUri` | String | `ghcr.io/divmora/...` | OCI image URI in ECR or GHCR. |
 | `Architecture` | String | `arm64` | `arm64` (AWS Graviton) or `x86_64`. |

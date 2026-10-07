@@ -33,13 +33,29 @@ type QuotaTracker struct {
 }
 
 // NewQuotaTracker initializes a QuotaTracker with limits loaded from environment or defaults.
+// To prevent licensing bypass loopholes, environment variables can only tighten (lower) limits for testing,
+// but can never exceed the hardcoded DefaultMaxNonProdBatchRecords (10,000) or DefaultMaxNonProdContainerRecords (25,000) ceilings.
 func NewQuotaTracker() *QuotaTracker {
 	batchLimit := getEnvInt64("DIVMORA_NON_PROD_MAX_BATCH", DefaultMaxNonProdBatchRecords)
+	if batchLimit > DefaultMaxNonProdBatchRecords {
+		batchLimit = DefaultMaxNonProdBatchRecords
+	}
 	containerLimit := getEnvInt64("DIVMORA_NON_PROD_MAX_CONTAINER", DefaultMaxNonProdContainerRecords)
+	if containerLimit > DefaultMaxNonProdContainerRecords {
+		containerLimit = DefaultMaxNonProdContainerRecords
+	}
 
 	return &QuotaTracker{
 		maxBatchRecords:     batchLimit,
 		maxContainerRecords: containerLimit,
+	}
+}
+
+// SetLimitsForTest overrides limits for testing purposes.
+func (q *QuotaTracker) SetLimitsForTest(batchLimit, containerLimit int64) {
+	if q != nil {
+		q.maxBatchRecords = batchLimit
+		q.maxContainerRecords = containerLimit
 	}
 }
 

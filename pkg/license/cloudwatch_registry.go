@@ -62,6 +62,12 @@ func WithRegistryLeaseDuration(l time.Duration) RegistryOption {
 	}
 }
 
+type entitlementState struct {
+	cachedCount    int
+	leaseExpiresAt time.Time
+	knownARNs      map[string]struct{}
+}
+
 // CloudWatchRegistry implements a distributed, tamper-proof monitored resource registry
 // backed by AWS CloudWatch Metrics to enforce MaxResources limits across concurrent Lambda environments.
 type CloudWatchRegistry struct {
@@ -70,11 +76,10 @@ type CloudWatchRegistry struct {
 	slidingWindow time.Duration
 	leaseDuration time.Duration
 
-	mu             sync.RWMutex
-	cachedCount    int
-	leaseExpiresAt time.Time
-	knownARNs      map[string]struct{}
-	lastHeartbeats map[string]time.Time
+	mu              sync.RWMutex
+	lastActiveCount int
+	leases          map[string]*entitlementState
+	lastHeartbeats  map[string]time.Time
 }
 
 // NewCloudWatchRegistry initializes a new CloudWatch-backed distributed resource registry.
@@ -84,7 +89,7 @@ func NewCloudWatchRegistry(client CloudWatchRegistryAPI, opts ...RegistryOption)
 		namespace:      DefaultRegistryNamespace,
 		slidingWindow:  DefaultRegistrySlidingWindow,
 		leaseDuration:  DefaultRegistryLeaseDuration,
-		knownARNs:      make(map[string]struct{}),
+		leases:         make(map[string]*entitlementState),
 		lastHeartbeats: make(map[string]time.Time),
 	}
 	for _, opt := range opts {
@@ -123,14 +128,23 @@ func (r *CloudWatchRegistry) RegisterAndCount(ctx context.Context, entitlementKe
 		}
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		for arn := range uniqueInputs {
-			r.knownARNs[arn] = struct{}{}
+		state := r.leases[entitlementKey]
+		if state == nil {
+			state = &entitlementState{
+				knownARNs: make(map[string]struct{}),
+			}
+			r.leases[entitlementKey] = state
 		}
-		return len(r.knownARNs), nil
+		for arn := range uniqueInputs {
+			state.knownARNs[arn] = struct{}{}
+		}
+		state.cachedCount = len(state.knownARNs)
+		r.lastActiveCount = state.cachedCount
+		return state.cachedCount, nil
 	}
 
 	// 1. Identify ARNs needing heartbeats (not sent within the last 1 minute to avoid excessive writes)
-	toPublish := r.filterHeartbeatsToPublish(uniqueInputs, evalTime)
+	toPublish := r.filterHeartbeatsToPublish(entitlementKey, uniqueInputs, evalTime)
 
 	// 2. Publish heartbeats to CloudWatch
 	if len(toPublish) > 0 {
@@ -143,13 +157,14 @@ func (r *CloudWatchRegistry) RegisterAndCount(ctx context.Context, entitlementKe
 	return r.evaluateActiveCount(ctx, entitlementKey, uniqueInputs, evalTime)
 }
 
-func (r *CloudWatchRegistry) filterHeartbeatsToPublish(inputs map[string]struct{}, evalTime time.Time) []string {
+func (r *CloudWatchRegistry) filterHeartbeatsToPublish(entitlementKey string, inputs map[string]struct{}, evalTime time.Time) []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	var toPublish []string
 	for arn := range inputs {
-		last, exists := r.lastHeartbeats[arn]
+		hbKey := entitlementKey + "\x00" + arn
+		last, exists := r.lastHeartbeats[hbKey]
 		if !exists || evalTime.Sub(last) >= 1*time.Minute {
 			toPublish = append(toPublish, arn)
 		}
@@ -157,11 +172,12 @@ func (r *CloudWatchRegistry) filterHeartbeatsToPublish(inputs map[string]struct{
 	return toPublish
 }
 
-func (r *CloudWatchRegistry) markHeartbeatsPublished(arns []string, evalTime time.Time) {
+func (r *CloudWatchRegistry) markHeartbeatsPublished(entitlementKey string, arns []string, evalTime time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, arn := range arns {
-		r.lastHeartbeats[arn] = evalTime
+		hbKey := entitlementKey + "\x00" + arn
+		r.lastHeartbeats[hbKey] = evalTime
 	}
 }
 
@@ -200,29 +216,32 @@ func (r *CloudWatchRegistry) publishHeartbeats(ctx context.Context, entitlementK
 			}
 			return err
 		}
-		r.markHeartbeatsPublished(chunkARNs, evalTime)
+		r.markHeartbeatsPublished(entitlementKey, chunkARNs, evalTime)
 	}
 	return nil
 }
 
 func (r *CloudWatchRegistry) evaluateActiveCount(ctx context.Context, entitlementKey string, currentInputs map[string]struct{}, evalTime time.Time) (int, error) {
 	r.mu.RLock()
-	leaseValid := !r.leaseExpiresAt.IsZero() && evalTime.Before(r.leaseExpiresAt)
+	state := r.leases[entitlementKey]
+	leaseValid := state != nil && !state.leaseExpiresAt.IsZero() && evalTime.Before(state.leaseExpiresAt)
 	r.mu.RUnlock()
 
 	if leaseValid {
 		// Fast path: in-container lease cache is valid (0ms overhead)
 		r.mu.Lock()
 		defer r.mu.Unlock()
+		state = r.leases[entitlementKey]
 		delta := 0
 		for arn := range currentInputs {
-			if _, known := r.knownARNs[arn]; !known {
-				r.knownARNs[arn] = struct{}{}
+			if _, known := state.knownARNs[arn]; !known {
+				state.knownARNs[arn] = struct{}{}
 				delta++
 			}
 		}
-		r.cachedCount += delta
-		return r.cachedCount, nil
+		state.cachedCount += delta
+		r.lastActiveCount = state.cachedCount
+		return state.cachedCount, nil
 	}
 
 	// Slow path: lease expired or cold start -> query CloudWatch
@@ -231,13 +250,21 @@ func (r *CloudWatchRegistry) evaluateActiveCount(ctx context.Context, entitlemen
 		// On query failure, fallback to best-effort local known count
 		r.mu.Lock()
 		defer r.mu.Unlock()
+		state = r.leases[entitlementKey]
+		if state == nil {
+			state = &entitlementState{
+				knownARNs: make(map[string]struct{}),
+			}
+			r.leases[entitlementKey] = state
+		}
 		for arn := range currentInputs {
-			r.knownARNs[arn] = struct{}{}
+			state.knownARNs[arn] = struct{}{}
 		}
-		if r.cachedCount < len(r.knownARNs) {
-			r.cachedCount = len(r.knownARNs)
+		if state.cachedCount < len(state.knownARNs) {
+			state.cachedCount = len(state.knownARNs)
 		}
-		return r.cachedCount, err
+		r.lastActiveCount = state.cachedCount
+		return state.cachedCount, err
 	}
 
 	// Merge current input ARNs into activeSet
@@ -248,9 +275,12 @@ func (r *CloudWatchRegistry) evaluateActiveCount(ctx context.Context, entitlemen
 
 	// Update lease cache
 	r.mu.Lock()
-	r.cachedCount = finalCount
-	r.leaseExpiresAt = evalTime.Add(r.leaseDuration)
-	r.knownARNs = activeSet
+	r.leases[entitlementKey] = &entitlementState{
+		cachedCount:    finalCount,
+		leaseExpiresAt: evalTime.Add(r.leaseDuration),
+		knownARNs:      activeSet,
+	}
+	r.lastActiveCount = finalCount
 	r.mu.Unlock()
 
 	return finalCount, nil
@@ -397,9 +427,8 @@ func (r *CloudWatchRegistry) Reset() {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.cachedCount = 0
-	r.leaseExpiresAt = time.Time{}
-	r.knownARNs = make(map[string]struct{})
+	r.lastActiveCount = 0
+	r.leases = make(map[string]*entitlementState)
 	r.lastHeartbeats = make(map[string]time.Time)
 }
 
@@ -410,5 +439,5 @@ func (r *CloudWatchRegistry) Count() int {
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.cachedCount
+	return r.lastActiveCount
 }

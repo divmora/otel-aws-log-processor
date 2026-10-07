@@ -2993,3 +2993,184 @@ func TestPreflightEnforce_EnvironmentVariableSpoofing(t *testing.T) {
 		t.Errorf("expected status.Valid=false")
 	}
 }
+
+func TestQuotaTracker_CeilingTamperResistance(t *testing.T) {
+	// 1. Attempt to exploit loophole by inflating ceilings via environment variables
+	t.Setenv("DIVMORA_NON_PROD_MAX_BATCH", "999999999")
+	t.Setenv("DIVMORA_NON_PROD_MAX_CONTAINER", "999999999")
+
+	qt := NewQuotaTracker()
+	if qt.maxBatchRecords != DefaultMaxNonProdBatchRecords {
+		t.Errorf("expected maxBatchRecords to be clamped to %d, got %d", DefaultMaxNonProdBatchRecords, qt.maxBatchRecords)
+	}
+	if qt.maxContainerRecords != DefaultMaxNonProdContainerRecords {
+		t.Errorf("expected maxContainerRecords to be clamped to %d, got %d", DefaultMaxNonProdContainerRecords, qt.maxContainerRecords)
+	}
+
+	// 2. Permitted tightening: environment variables can lower limits for testing
+	t.Setenv("DIVMORA_NON_PROD_MAX_BATCH", "50")
+	t.Setenv("DIVMORA_NON_PROD_MAX_CONTAINER", "100")
+
+	qtTight := NewQuotaTracker()
+	if qtTight.maxBatchRecords != 50 {
+		t.Errorf("expected maxBatchRecords=50, got %d", qtTight.maxBatchRecords)
+	}
+	if qtTight.maxContainerRecords != 100 {
+		t.Errorf("expected maxContainerRecords=100, got %d", qtTight.maxContainerRecords)
+	}
+}
+
+func TestEnforce_CommercialLicenseInDev_Valid(t *testing.T) {
+	SetVerificationPublicKey(testPubKey)
+	defer ResetVerificationPublicKey()
+
+	now := time.Now().UTC()
+	claims := &Claims{
+		ID: "lic_dev_test_1",
+		Customer: Customer{
+			Name:  "Test Dev Customer",
+			OrgID: "org_dev_test",
+		},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierEnterprise,
+		Scope:     &Scope{Accounts: []string{"111122223333"}},
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+	}
+	token := signTestToken(claims, testPrivKey)
+
+	// In a pure dev environment with NO production indicators,
+	// providing a valid commercial license key validates as commercial and waives non-prod 10k batch limits
+	opts := EnforcementOptions{
+		Environment:      "dev",
+		BucketName:       "my-dev-alb-logs-bucket",
+		LicenseKey:       token,
+		CallerAccountID:  "111122223333",
+		BatchRecordCount: 15_000, // exceeds non-prod ceiling of 10k
+		QuotaTracker:     NewQuotaTracker(),
+		EnforcementMode:  "strict",
+		EvaluationTime:   now,
+	}
+
+	status, err := Enforce(opts)
+	if err != nil {
+		t.Fatalf("unexpected error with valid commercial token in dev: %v", err)
+	}
+	if !status.Valid {
+		t.Errorf("expected valid=true")
+	}
+	if status.StatusReason != "valid" {
+		t.Errorf("expected status=valid, got: %s", status.StatusReason)
+	}
+	if status.Claims == nil || status.Claims.Plan != TierEnterprise {
+		t.Errorf("expected Enterprise claims attached")
+	}
+
+	attrs := AppendLicenseAttributes(nil, status, "dev", "111122223333")
+	var tierAttr, idAttr string
+	for _, a := range attrs {
+		if a.Key == "divmora.license.tier" && a.Value.StringValue != nil {
+			tierAttr = *a.Value.StringValue
+		}
+		if a.Key == "divmora.license.id" && a.Value.StringValue != nil {
+			idAttr = *a.Value.StringValue
+		}
+	}
+	if tierAttr != TierEnterprise {
+		t.Errorf("expected divmora.license.tier=enterprise, got: %s", tierAttr)
+	}
+	if idAttr != "lic_dev_test_1" {
+		t.Errorf("expected divmora.license.id=lic_dev_test_1, got: %s", idAttr)
+	}
+}
+
+func TestEnforce_CommercialLicenseInDev_InvalidToken(t *testing.T) {
+	SetVerificationPublicKey(testPubKey)
+	defer ResetVerificationPublicKey()
+
+	badToken := "eyJhbGciOiJFZERTQSI...corrupted_dev_token"
+
+	// 1. Strict mode: fails fast so developers know their license key is invalid
+	strictOpts := EnforcementOptions{
+		Environment:     "dev",
+		BucketName:      "my-dev-alb-logs",
+		LicenseKey:      badToken,
+		EnforcementMode: "strict",
+	}
+	statusStrict, errStrict := Enforce(strictOpts)
+	if errStrict == nil {
+		t.Fatal("expected invalid token in dev strict mode to return an error")
+	}
+	if statusStrict == nil || statusStrict.Valid {
+		t.Errorf("expected valid=false in strict mode")
+	}
+
+	// 2. Warn mode: logs warning and gracefully falls back to non_prod_free under BSL 1.1
+	warnOpts := EnforcementOptions{
+		Environment:     "dev",
+		BucketName:      "my-dev-alb-logs",
+		LicenseKey:      badToken,
+		EnforcementMode: "warn",
+	}
+	statusWarn, errWarn := Enforce(warnOpts)
+	if errWarn != nil {
+		t.Fatalf("unexpected error in warn mode fallback: %v", errWarn)
+	}
+	if !statusWarn.Valid {
+		t.Errorf("expected valid=true in warn mode fallback")
+	}
+	if statusWarn.StatusReason != "non_prod_free" {
+		t.Errorf("expected status=non_prod_free in warn mode, got: %s", statusWarn.StatusReason)
+	}
+}
+
+func TestEnforce_CommercialLicenseInDev_AccountMismatch(t *testing.T) {
+	SetVerificationPublicKey(testPubKey)
+	defer ResetVerificationPublicKey()
+
+	now := time.Now().UTC()
+	claims := &Claims{
+		ID: "lic_dev_acct_test",
+		Customer: Customer{
+			Name: "Acme Corp",
+		},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierPro,
+		Scope:     &Scope{Accounts: []string{"999999999999"}}, // only account 999999999999
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+	}
+	token := signTestToken(claims, testPrivKey)
+
+	// Caller is 111122223333 (mismatch)
+	// 1. Strict mode fails
+	strictOpts := EnforcementOptions{
+		Environment:     "dev",
+		BucketName:      "my-dev-alb-logs",
+		LicenseKey:      token,
+		CallerAccountID: "111122223333",
+		EnforcementMode: "strict",
+		EvaluationTime:  now,
+	}
+	_, errStrict := Enforce(strictOpts)
+	if errStrict == nil {
+		t.Fatal("expected account mismatch in dev strict mode to return an error")
+	}
+
+	// 2. Warn mode falls back to non_prod_free
+	warnOpts := EnforcementOptions{
+		Environment:     "dev",
+		BucketName:      "my-dev-alb-logs",
+		LicenseKey:      token,
+		CallerAccountID: "111122223333",
+		EnforcementMode: "warn",
+		EvaluationTime:  now,
+	}
+	statusWarn, errWarn := Enforce(warnOpts)
+	if errWarn != nil {
+		t.Fatalf("unexpected error in warn mode fallback: %v", errWarn)
+	}
+	if !statusWarn.Valid || statusWarn.StatusReason != "non_prod_free" {
+		t.Errorf("expected valid=true and status=non_prod_free, got valid=%v, status=%s", statusWarn.Valid, statusWarn.StatusReason)
+	}
+}

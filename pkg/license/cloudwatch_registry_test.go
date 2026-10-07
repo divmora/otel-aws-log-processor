@@ -174,31 +174,47 @@ func TestResolveEntitlementKey(t *testing.T) {
 		t.Errorf("got %s, want sub_stripe_999", key)
 	}
 
-	// 2. OrgID takes priority over Claims.ID (Strategy 1)
+	// 2. Project metadata scoped under organization (isolates multiple projects in same org)
 	claims2 := &Claims{
 		ID: "lic_uuid_222",
 		Customer: Customer{
-			OrgID: "org_globex",
+			OrgID: "org_acme",
+		},
+		Metadata: map[string]string{
+			"project": "payments",
 		},
 	}
-	if key := ResolveEntitlementKey(claims2, "production"); key != "org_globex" {
-		t.Errorf("got %s, want org_globex", key)
+	if key := ResolveEntitlementKey(claims2, "production"); key != "org_acme/payments" {
+		t.Errorf("got %s, want org_acme/payments", key)
 	}
 
-	// 3. Claims.ID fallback (Strategy 2)
+	// 3. Claims.ID isolates projects when no metadata is provided (Strategy 2)
 	claims3 := &Claims{
 		ID: "lic_uuid_333",
+		Customer: Customer{
+			OrgID: "org_acme", // same org, but different license ID
+		},
 	}
 	if key := ResolveEntitlementKey(claims3, "production"); key != "lic_uuid_333" {
 		t.Errorf("got %s, want lic_uuid_333", key)
 	}
 
-	// 4. Non-production environment fallback
+	// 4. OrgID fallback if ID is empty
+	claims4 := &Claims{
+		Customer: Customer{
+			OrgID: "org_fallback",
+		},
+	}
+	if key := ResolveEntitlementKey(claims4, "production"); key != "org_fallback" {
+		t.Errorf("got %s, want org_fallback", key)
+	}
+
+	// 5. Non-production environment fallback
 	if key := ResolveEntitlementKey(nil, "development"); key != "bsl1.1-free" {
 		t.Errorf("got %s, want bsl1.1-free", key)
 	}
 
-	// 5. Unlicensed production fallback
+	// 6. Unlicensed production fallback
 	if key := ResolveEntitlementKey(nil, "production"); key != "unlicensed" {
 		t.Errorf("got %s, want unlicensed", key)
 	}
@@ -485,5 +501,77 @@ func TestCloudWatchRegistry_NilClientFallback(t *testing.T) {
 	}
 	if count != 2 {
 		t.Errorf("expected fallback in-memory count 2, got %d", count)
+	}
+}
+
+func TestCloudWatchRegistry_MultipleProjectsIsolation(t *testing.T) {
+	mockCW := newMockCloudWatchRegistryAPI()
+	reg := NewCloudWatchRegistry(mockCW)
+
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+
+	// Both projects belong to the same organization "org_mega_corp"
+	// Project 1 (Payments): quota allows 1 resource
+	claimsPayments := &Claims{
+		ID: "lic_pay_01",
+		Customer: Customer{
+			Name:  "MegaCorp",
+			OrgID: "org_mega_corp",
+		},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierPro,
+		IssuedAt:  now.AddDate(0, -1, 0),
+		ExpiresAt: now.AddDate(0, 11, 0),
+		Limits: &Limits{
+			MaxResources: 1,
+		},
+	}
+	tokenPayments := signTestToken(claimsPayments, testPrivKey)
+
+	// Project 2 (Analytics): quota allows 1 resource
+	claimsAnalytics := &Claims{
+		ID: "lic_ana_02",
+		Customer: Customer{
+			Name:  "MegaCorp",
+			OrgID: "org_mega_corp",
+		},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierPro,
+		IssuedAt:  now.AddDate(0, -1, 0),
+		ExpiresAt: now.AddDate(0, 11, 0),
+		Limits: &Limits{
+			MaxResources: 1,
+		},
+	}
+	tokenAnalytics := signTestToken(claimsAnalytics, testPrivKey)
+
+	arnPaymentsALB := "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/alb-payments/1"
+	arnAnalyticsALB := "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/alb-analytics/2"
+
+	// 1. Evaluate Project 1 (Payments) with 1 ALB
+	statusPay, errPay := Enforce(EnforcementOptions{
+		Environment:        "production",
+		LicenseKey:         tokenPayments,
+		PublicKey:          testPubKey,
+		CloudWatchRegistry: reg,
+		SourceResourceARNs: []string{arnPaymentsALB},
+		EvaluationTime:     now,
+	})
+	if errPay != nil || !statusPay.Valid {
+		t.Fatalf("Payments project should be valid within quota: err=%v, valid=%v", errPay, statusPay.Valid)
+	}
+
+	// 2. Evaluate Project 2 (Analytics) with 1 ALB in the same account/org
+	// If they collided on OrgID, total would be 2, exceeding quota of 1.
+	statusAna, errAna := Enforce(EnforcementOptions{
+		Environment:        "production",
+		LicenseKey:         tokenAnalytics,
+		PublicKey:          testPubKey,
+		CloudWatchRegistry: reg,
+		SourceResourceARNs: []string{arnAnalyticsALB},
+		EvaluationTime:     now,
+	})
+	if errAna != nil || !statusAna.Valid {
+		t.Fatalf("Analytics project should be isolated from Payments: err=%v, valid=%v", errAna, statusAna.Valid)
 	}
 }

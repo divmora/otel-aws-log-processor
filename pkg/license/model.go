@@ -649,21 +649,35 @@ func ResolveCentralMetricsRegion(c *Claims) string {
 // ResolveEntitlementKey determines the canonical scoping dimension for resource registry metrics.
 // Resolution Order:
 // 1. Metadata["subscription_id"] (Explicit subscription lineage across annual renewals - Strategy 1)
-// 2. Customer.OrgID              (Organization-level tenant lineage - Strategy 1)
-// 3. Claims.ID                   (Unique license token UUID - Strategy 2 fallback)
-// 4. "bsl1.1-free"               (Non-production / community exemption fallback)
+// 2. Metadata["project_id"] or Metadata["project"] (Project/department scope under same organization)
+// 3. Claims.ID                   (Unique license token UUID - Strategy 2 fallback; guarantees complete isolation across projects)
+// 4. Customer.OrgID              (Organization-level tenant fallback if ID is omitted)
+// 5. "bsl1.1-free"               (Non-production / community exemption fallback)
+// 6. "unlicensed"                (Unlicensed production fallback)
 func ResolveEntitlementKey(c *Claims, env string) string {
 	if c != nil {
 		if c.Metadata != nil {
 			if subID := strings.TrimSpace(c.Metadata["subscription_id"]); subID != "" {
 				return subID
 			}
-		}
-		if orgID := strings.TrimSpace(c.Customer.OrgID); orgID != "" {
-			return orgID
+			if projID := strings.TrimSpace(c.Metadata["project_id"]); projID != "" {
+				if orgID := strings.TrimSpace(c.Customer.OrgID); orgID != "" {
+					return orgID + "/" + projID
+				}
+				return projID
+			}
+			if proj := strings.TrimSpace(c.Metadata["project"]); proj != "" {
+				if orgID := strings.TrimSpace(c.Customer.OrgID); orgID != "" {
+					return orgID + "/" + proj
+				}
+				return proj
+			}
 		}
 		if c.ID != "" {
 			return c.ID
+		}
+		if orgID := strings.TrimSpace(c.Customer.OrgID); orgID != "" {
+			return orgID
 		}
 	}
 	if IsNonProductionEnvironment(env) {

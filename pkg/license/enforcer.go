@@ -430,37 +430,37 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 	}
 
 	// 2. Non-Production Exemption Path
+	hasProd, indicatorReason := DetectProductionIndicators(opts)
+	token, _ := ResolveToken(opts.LicenseKey, opts.LicenseFile)
+
 	if isNonProd || entitlement.Authorized {
-		hasProd, indicatorReason := DetectProductionIndicators(opts)
-		if hasProd {
-			// Check if a commercial license token is provided despite non-prod declaration
-			token, _ := ResolveToken(opts.LicenseKey, opts.LicenseFile)
-			if token == "" {
-				msg := fmt.Sprintf("COMMERCIAL LICENSE REQUIRED: Environment declared as non-production '%s', but production indicators were detected (%s). Please obtain a license from licensing@divmora.com", env, indicatorReason)
-				if mode == "strict" {
-					slog.Warn("COMMERCIAL LICENSE REQUIRED",
-						"environment", env,
-						"indicator", indicatorReason,
-						"contact", "licensing@divmora.com",
-					)
-					return &ValidationStatus{
-						Valid:        false,
-						StatusReason: "unlicensed_production",
-						Message:      msg,
-					}, fmt.Errorf("%s: %w", msg, ErrCommercialLicenseRequired)
-				}
-				slog.Warn("SUSPECTED PRODUCTION MISCONFIGURATION: Environment is declared as non-production, but production indicators were detected.",
+		if token != "" {
+			// A commercial license token is provided in non-production.
+			// Fall through to Step 3 to evaluate, verify, and apply commercial entitlements.
+		} else if hasProd {
+			msg := fmt.Sprintf("COMMERCIAL LICENSE REQUIRED: Environment declared as non-production '%s', but production indicators were detected (%s). Please obtain a license from licensing@divmora.com", env, indicatorReason)
+			if mode == "strict" {
+				slog.Warn("COMMERCIAL LICENSE REQUIRED",
 					"environment", env,
 					"indicator", indicatorReason,
-					"hint", "Ensure production workloads are licensed under DIVMORA commercial terms",
+					"contact", "licensing@divmora.com",
 				)
 				return &ValidationStatus{
-					Valid:        true,
-					StatusReason: "suspected_production",
+					Valid:        false,
+					StatusReason: "unlicensed_production",
 					Message:      msg,
-				}, nil
+				}, fmt.Errorf("%s: %w", msg, ErrCommercialLicenseRequired)
 			}
-			// If a commercial token is provided, fall through to commercial license verification (Step 3)
+			slog.Warn("SUSPECTED PRODUCTION MISCONFIGURATION: Environment is declared as non-production, but production indicators were detected.",
+				"environment", env,
+				"indicator", indicatorReason,
+				"hint", "Ensure production workloads are licensed under DIVMORA commercial terms",
+			)
+			return &ValidationStatus{
+				Valid:        true,
+				StatusReason: "suspected_production",
+				Message:      msg,
+			}, nil
 		} else {
 			quotaExceeded := false
 			var quotaReason string
@@ -573,6 +573,17 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 		if mode == "strict" {
 			return status, fmt.Errorf("commercial license verification failed: %w", err)
 		}
+		if (isNonProd || entitlement.Authorized) && !hasProd {
+			slog.Warn("Commercial license provided in non-production failed verification; falling back to free non-production grant under BSL 1.1",
+				"environment", env,
+				"error", err,
+			)
+			return &ValidationStatus{
+				Valid:        true,
+				StatusReason: "non_prod_free",
+				Message:      fmt.Sprintf("Non-production environment '%s' authorized free of charge under BSL 1.1 Additional Use Grant (commercial license failed verification: %v)", env, err),
+			}, nil
+		}
 		return status, nil
 	}
 
@@ -587,6 +598,17 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 
 		if mode == "strict" {
 			return status, fmt.Errorf("%s", mismatchMsg)
+		}
+		if (isNonProd || entitlement.Authorized) && !hasProd {
+			slog.Warn("Commercial license account mismatch in non-production environment; falling back to free non-production grant under BSL 1.1",
+				"environment", env,
+				"caller_account", callerAccount,
+			)
+			return &ValidationStatus{
+				Valid:        true,
+				StatusReason: "non_prod_free",
+				Message:      fmt.Sprintf("Non-production environment '%s' authorized free of charge under BSL 1.1 Additional Use Grant (%s)", env, mismatchMsg),
+			}, nil
 		}
 		return status, nil
 	}
@@ -603,6 +625,17 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 
 			if mode == "strict" {
 				return status, fmt.Errorf("%s", mismatchMsg)
+			}
+			if (isNonProd || entitlement.Authorized) && !hasProd {
+				slog.Warn("Commercial license source account mismatch in non-production environment; falling back to free non-production grant under BSL 1.1",
+					"environment", env,
+					"source_account", srcAccount,
+				)
+				return &ValidationStatus{
+					Valid:        true,
+					StatusReason: "non_prod_free",
+					Message:      fmt.Sprintf("Non-production environment '%s' authorized free of charge under BSL 1.1 Additional Use Grant (%s)", env, mismatchMsg),
+				}, nil
 			}
 			return status, nil
 		}

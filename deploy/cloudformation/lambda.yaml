@@ -13,6 +13,7 @@ Metadata:
       - Label:
           default: "Application & Compute Configuration"
         Parameters:
+          - ProjectName
           - EnvironmentName
           - ImageUri
           - Architecture
@@ -67,6 +68,16 @@ Metadata:
 # Parameters
 # ==============================================================================
 Parameters:
+  ProjectName:
+    Type: String
+    Default: ""
+    MaxLength: 32
+    AllowedPattern: '^[a-zA-Z0-9-]*$'
+    Description: >
+      Optional project, application, or team identifier (e.g. 'payments', 'analytics').
+      When specified, disambiguates resource names so multiple log processor stacks
+      can run in the same AWS account and environment without name collisions.
+
   EnvironmentName:
     Type: String
     Default: prod
@@ -311,6 +322,7 @@ Parameters:
 # Conditions
 # ==============================================================================
 Conditions:
+  HasProjectName: !Not [!Equals [!Ref ProjectName, ""]]
   HasVpc: !Not [!Equals [!Join ["", !Ref VpcSubnetIds], ""]]
   HasBasicAuthSecret: !Not [!Equals [!Ref BasicAuthPasswordSecretArn, ""]]
   HasOtlpHeadersSecret: !Not [!Equals [!Ref OtlpHeadersSecretArn, ""]]
@@ -330,12 +342,16 @@ Conditions:
 Resources:
 
   # ----------------------------------------------------------------------------
+  # ----------------------------------------------------------------------------
   # SQS Dead Letter Queue (DLQ)
   # ----------------------------------------------------------------------------
   DeadLetterQueue:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: !Sub otel-aws-log-processor-dlq-${EnvironmentName}
+      QueueName: !If
+        - HasProjectName
+        - !Sub otel-aws-log-processor-dlq-${ProjectName}-${EnvironmentName}
+        - !Sub otel-aws-log-processor-dlq-${EnvironmentName}
       MessageRetentionPeriod: 1209600 # 14 days
       SqsManagedSseEnabled: true
 
@@ -345,7 +361,10 @@ Resources:
   IngestionQueue:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: !Sub otel-aws-log-processor-queue-${EnvironmentName}
+      QueueName: !If
+        - HasProjectName
+        - !Sub otel-aws-log-processor-queue-${ProjectName}-${EnvironmentName}
+        - !Sub otel-aws-log-processor-queue-${EnvironmentName}
       VisibilityTimeout: !Ref SqsVisibilityTimeout
       MessageRetentionPeriod: 345600 # 4 days
       SqsManagedSseEnabled: true
@@ -410,7 +429,10 @@ Resources:
   LambdaLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub /aws/lambda/otel-aws-log-processor-${EnvironmentName}
+      LogGroupName: !If
+        - HasProjectName
+        - !Sub /aws/lambda/otel-aws-log-processor-${ProjectName}-${EnvironmentName}
+        - !Sub /aws/lambda/otel-aws-log-processor-${EnvironmentName}
       RetentionInDays: !Ref LogRetentionInDays
 
   # ----------------------------------------------------------------------------
@@ -419,7 +441,10 @@ Resources:
   LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub otel-aws-log-processor-role-${EnvironmentName}
+      RoleName: !If
+        - HasProjectName
+        - !Sub otel-aws-log-processor-role-${ProjectName}-${EnvironmentName}
+        - !Sub otel-aws-log-processor-role-${EnvironmentName}
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -529,7 +554,10 @@ Resources:
     Type: AWS::Lambda::Function
     DependsOn: LambdaLogGroup
     Properties:
-      FunctionName: !Sub otel-aws-log-processor-${EnvironmentName}
+      FunctionName: !If
+        - HasProjectName
+        - !Sub otel-aws-log-processor-${ProjectName}-${EnvironmentName}
+        - !Sub otel-aws-log-processor-${EnvironmentName}
       Description: High-performance AWS access log processor converting raw logs to OpenTelemetry OTLP records
       Role: !GetAtt LambdaExecutionRole.Arn
       PackageType: Image
@@ -542,6 +570,7 @@ Resources:
       Environment:
         Variables:
           ENVIRONMENT: !Ref EnvironmentName
+          PROJECT_NAME: !If [HasProjectName, !Ref ProjectName, ""]
           LOG_LEVEL: !Ref LogLevel
           OTLP_HTTP_LOGS_ENDPOINT: !Ref OtlpLogsEndpoint
           OTEL_EXPORTER_OTLP_HEADERS: !If
@@ -592,7 +621,10 @@ Resources:
   DeadLetterQueueAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: !Sub otel-aws-log-processor-dlq-messages-${EnvironmentName}
+      AlarmName: !If
+        - HasProjectName
+        - !Sub otel-aws-log-processor-dlq-messages-${ProjectName}-${EnvironmentName}
+        - !Sub otel-aws-log-processor-dlq-messages-${EnvironmentName}
       AlarmDescription: Triggers when unprocessed log messages accumulate in the DLQ
       Namespace: AWS/SQS
       MetricName: ApproximateNumberOfMessagesVisible
@@ -620,7 +652,10 @@ Resources:
   LambdaErrorAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: !Sub otel-aws-log-processor-errors-${EnvironmentName}
+      AlarmName: !If
+        - HasProjectName
+        - !Sub otel-aws-log-processor-errors-${ProjectName}-${EnvironmentName}
+        - !Sub otel-aws-log-processor-errors-${EnvironmentName}
       AlarmDescription: Triggers when Lambda invocations produce unhandled errors
       Namespace: AWS/Lambda
       MetricName: Errors
@@ -648,7 +683,10 @@ Resources:
   LicenseViolationAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: !Sub otel-aws-log-processor-license-violations-${EnvironmentName}
+      AlarmName: !If
+        - HasProjectName
+        - !Sub otel-aws-log-processor-license-violations-${ProjectName}-${EnvironmentName}
+        - !Sub otel-aws-log-processor-license-violations-${EnvironmentName}
       AlarmDescription: Triggers when deterministic license compliance violations occur in production
       Namespace: Divmora/LogProcessor
       MetricName: LicenseViolations
