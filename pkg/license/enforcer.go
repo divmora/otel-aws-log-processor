@@ -934,15 +934,7 @@ func BuildEMFPayload(status *ValidationStatus, env string, recordsProcessed int,
 	}
 
 	violations := 0
-	if status != nil && (status.StatusReason == "unlicensed_production" ||
-		status.StatusReason == "suspected_production" ||
-		status.StatusReason == "revoked" ||
-		status.StatusReason == "feature_not_entitled" ||
-		status.StatusReason == "resource_quota_exceeded" ||
-		status.StatusReason == "resource_not_allowed" ||
-		status.StatusReason == "account_mismatch" ||
-		status.StatusReason == "source_account_mismatch" ||
-		status.QuotaExceeded) {
+	if status != nil && (!status.Valid || status.QuotaExceeded || status.StatusReason == "suspected_production") {
 		violations = 1
 	}
 
@@ -1161,7 +1153,7 @@ func PublishCrossRegionMetrics(ctx context.Context, cw CloudWatchMetricAPI, stat
 	statusTag := "unlicensed_production"
 	if status != nil {
 		statusTag = status.StatusReason
-		if !status.Valid {
+		if !status.Valid || status.QuotaExceeded || status.StatusReason == "suspected_production" {
 			violations = 1
 		}
 	}

@@ -181,6 +181,9 @@ func init() {
 	// Initial license compliance check
 	env := license.DetectEnvironment()
 	projectName := strings.TrimSpace(utils.GetEnv("PROJECT_NAME", ""))
+	if projectName != "" {
+		logger = logger.With("project", projectName)
+	}
 	initStatus, _ := license.Enforce(license.EnforcementOptions{
 		Environment:  env,
 		ProjectName:  projectName,
@@ -205,9 +208,6 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 	callerAccount := license.ExtractCallerAccountID(ctx)
 	env := license.DetectEnvironment()
 	projectName := strings.TrimSpace(utils.GetEnv("PROJECT_NAME", ""))
-	if projectName != "" {
-		logger = logger.With("project", projectName)
-	}
 
 	var authTime time.Time
 	for _, record := range sqsEvent.Records {
@@ -243,7 +243,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 			"registry_region", regRegion,
 			"action", failureAction,
 		)
-		license.EmitCloudWatchEMF(preflightStatus, env, 0, getActiveResourceCount(regRegion), quotaTracker.TotalBytesProcessed())
+		license.EmitMetrics(ctx, getCloudWatchClient, preflightStatus, env, 0, getActiveResourceCount(regRegion), quotaTracker.TotalBytesProcessed())
 
 		if failureAction == "dlq" {
 			for _, rec := range sqsEvent.Records {

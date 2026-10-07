@@ -18,7 +18,25 @@ import (
 // Regex for CloudFront log filename
 // Format: {DistributionID}.{YYYY}-{MM}-{DD}-{HH}.{UniqueID}.gz or .parquet
 // Example: E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz
-var cloudFrontLogPattern = regexp.MustCompile(`[A-Z0-9]+\.\d{4}-\d{2}-\d{2}-\d{2}\.[a-zA-Z0-9]+\.(gz|parquet)$`)
+var (
+	cloudFrontLogPattern = regexp.MustCompile(`[A-Z0-9]+\.\d{4}-\d{2}-\d{2}-\d{2}\.[a-zA-Z0-9]+\.(gz|parquet)$`)
+	cfKeyPattern         = regexp.MustCompile(`(?:^|/)([A-Z0-9]{8,32})\.\d{4}-\d{2}-\d{2}`)
+	cfParquetPattern     = regexp.MustCompile(`(?:^|/)([A-Z0-9]{8,32})[._]`)
+)
+
+// ExtractDistributionID extracts the canonical CloudFront Distribution ID from the S3 key path or filename.
+func ExtractDistributionID(key string) string {
+	if m := cfKeyPattern.FindStringSubmatch(key); len(m) >= 2 {
+		return m[1]
+	}
+	if strings.HasSuffix(key, ".parquet") {
+		if m := cfParquetPattern.FindStringSubmatch(key); len(m) >= 2 {
+			return m[1]
+		}
+	}
+	_, distID := utils.ParseRegionAccountFromS3Key(key)
+	return distID
+}
 
 type CloudFrontProcessor struct {
 	MaxBatchSize  int
@@ -47,6 +65,7 @@ func (p *CloudFrontProcessor) Matches(bucket, key string) bool {
 func (p *CloudFrontProcessor) Process(ctx context.Context, logger *slog.Logger, s3Client *s3.Client, bucket, key string) ([]LogAdapter, error) {
 	// Attempt to parse account/region if they happen to be in the path
 	accountID, _ := utils.ParseRegionAccountFromS3Key(key)
+	distributionID := ExtractDistributionID(key)
 	// CloudFront is global, the default S3 regex might extract DistributionID as Region, so we override it
 	region := "global"
 
@@ -58,6 +77,7 @@ func (p *CloudFrontProcessor) Process(ctx context.Context, logger *slog.Logger, 
 			entry := row.ToLogEntry()
 			return CloudFrontAdapter{
 				CloudFrontLogEntry: entry,
+				DistributionID:     distributionID,
 				AccountID:          accountID,
 				Region:             region,
 			}, nil
@@ -75,6 +95,7 @@ func (p *CloudFrontProcessor) Process(ctx context.Context, logger *slog.Logger, 
 
 		return CloudFrontAdapter{
 			CloudFrontLogEntry: entry,
+			DistributionID:     distributionID,
 			AccountID:          accountID,
 			Region:             region,
 		}, nil
@@ -84,13 +105,19 @@ func (p *CloudFrontProcessor) Process(ctx context.Context, logger *slog.Logger, 
 // CloudFrontAdapter implementation
 type CloudFrontAdapter struct {
 	*parser.CloudFrontLogEntry
-	AccountID string
-	Region    string
+	DistributionID string
+	AccountID      string
+	Region         string
 }
 
 func (a CloudFrontAdapter) GetResourceKey() string {
-	// Use distribution domain as key resource identifier
-	return a.CloudFrontLogEntry.CSHost
+	if a.DistributionID != "" {
+		return a.DistributionID
+	}
+	if a.CloudFrontLogEntry != nil && a.CloudFrontLogEntry.CSHost != "" && a.CloudFrontLogEntry.CSHost != "-" {
+		return a.CloudFrontLogEntry.CSHost
+	}
+	return "cloudfront"
 }
 
 func (a CloudFrontAdapter) GetResourceAttributes() []model.OTelAttribute {
@@ -102,12 +129,15 @@ func (a CloudFrontAdapter) GetResourceAttributes() []model.OTelAttribute {
 		{Key: "service.name", Value: model.StringValue("cloudfront-log-parser")},
 	}
 
-	if entry.CSHost != "" && strings.HasSuffix(entry.CSHost, ".cloudfront.net") {
-		distID := strings.TrimSuffix(entry.CSHost, ".cloudfront.net")
+	distID := a.DistributionID
+	if distID == "" && entry != nil && entry.CSHost != "" && strings.HasSuffix(entry.CSHost, ".cloudfront.net") {
+		distID = strings.TrimSuffix(entry.CSHost, ".cloudfront.net")
+	}
+	if distID != "" {
 		attrs = append(attrs, model.OTelAttribute{Key: "aws.cloudfront.distribution_id", Value: model.StringValue(distID)})
 	}
 
-	// If we managed to extract account/region from path (rare), add them
+	// If we managed to extract account/region from path, add them
 	attrs = model.EnsureRegionAccountAttributes(attrs, a.Region, a.AccountID)
 
 	return attrs

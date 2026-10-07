@@ -3511,3 +3511,111 @@ func TestBuildEMFPayload_WithProject(t *testing.T) {
 		t.Errorf("expected Project='checkout' in EMF payload, got %v", payload["Project"])
 	}
 }
+
+func TestBuildEMFPayload_ViolationsEvaluation(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     *ValidationStatus
+		wantViol   int
+		wantStatus string
+	}{
+		{
+			name: "ValidStatus",
+			status: &ValidationStatus{
+				Valid:        true,
+				StatusReason: "valid",
+			},
+			wantViol:   0,
+			wantStatus: "valid",
+		},
+		{
+			name: "GracePeriodStatus",
+			status: &ValidationStatus{
+				Valid:         true,
+				InGracePeriod: true,
+				StatusReason:  "grace_period",
+			},
+			wantViol:   0,
+			wantStatus: "grace_period",
+		},
+		{
+			name: "NonProdFree",
+			status: &ValidationStatus{
+				Valid:        true,
+				StatusReason: "non_prod_free",
+			},
+			wantViol:   0,
+			wantStatus: "non_prod_free",
+		},
+		{
+			name: "ExpiredLicense",
+			status: &ValidationStatus{
+				Valid:        false,
+				StatusReason: "expired",
+			},
+			wantViol:   1,
+			wantStatus: "expired",
+		},
+		{
+			name: "InvalidLicenseToken",
+			status: &ValidationStatus{
+				Valid:        false,
+				StatusReason: "invalid",
+			},
+			wantViol:   1,
+			wantStatus: "invalid",
+		},
+		{
+			name: "ProjectMismatch",
+			status: &ValidationStatus{
+				Valid:        false,
+				StatusReason: "project_mismatch",
+			},
+			wantViol:   1,
+			wantStatus: "project_mismatch",
+		},
+		{
+			name: "RegistryAccessDenied",
+			status: &ValidationStatus{
+				Valid:        false,
+				StatusReason: "registry_error",
+			},
+			wantViol:   1,
+			wantStatus: "registry_error",
+		},
+		{
+			name: "SuspectedProductionInNonProd",
+			status: &ValidationStatus{
+				Valid:        true,
+				StatusReason: "suspected_production",
+			},
+			wantViol:   1,
+			wantStatus: "suspected_production",
+		},
+		{
+			name: "FairUseQuotaExceededInNonProd",
+			status: &ValidationStatus{
+				Valid:         true,
+				StatusReason:  "quota_exceeded",
+				QuotaExceeded: true,
+			},
+			wantViol:   1,
+			wantStatus: "quota_exceeded",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := BuildEMFPayload(tt.status, "production", 100)
+			if payload == nil {
+				t.Fatalf("expected non-nil EMF payload")
+			}
+			if got, ok := payload["LicenseViolations"].(int); !ok || got != tt.wantViol {
+				t.Errorf("LicenseViolations = %v, want %d", payload["LicenseViolations"], tt.wantViol)
+			}
+			if got, ok := payload["Status"].(string); !ok || got != tt.wantStatus {
+				t.Errorf("Status = %v, want %s", payload["Status"], tt.wantStatus)
+			}
+		})
+	}
+}
