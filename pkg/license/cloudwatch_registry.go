@@ -2,6 +2,7 @@ package license
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -150,6 +151,9 @@ func (r *CloudWatchRegistry) RegisterAndCount(ctx context.Context, entitlementKe
 	if len(toPublish) > 0 {
 		if err := r.publishHeartbeats(ctx, entitlementKey, toPublish, evalTime); err != nil {
 			slog.Warn("Failed to publish resource registry heartbeats to CloudWatch", "error", err, "namespace", r.namespace, "entitlement_key", entitlementKey)
+			if errors.Is(err, ErrCloudWatchRegistryAccessDenied) {
+				return 0, err
+			}
 		}
 	}
 

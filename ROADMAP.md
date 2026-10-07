@@ -57,3 +57,12 @@ This document serves as the **living product roadmap** for `otel-aws-log-process
   - Parse `user_agent` strings into standard OpenTelemetry browser, OS, and device attributes (`user_agent.original`, `browser.name`, `os.name`).
 - [ ] **Self-Observability Metrics**
   - Emit native OTLP runtime metrics (`otel_aws_logs.records_parsed_total`, `otel_aws_logs.export_duration_ms`, `otel_aws_logs.bytes_processed_total`) to monitor processing efficiency.
+
+---
+
+## 5. Multi-Account Fleet Governance & Distributed Quota Aggregation
+
+- [ ] **Cross-Account Centralized Resource Registry (STS AssumeRole / CloudWatch OAM)**
+  - Support cross-account CloudWatch metrics aggregation when Lambda processors run across decentralized spoke AWS accounts.
+  - Enable spoke Lambdas to assume a designated cross-account IAM role (`CENTRAL_REGISTRY_ROLE_ARN`) or leverage CloudWatch Observability Access Manager (OAM) to publish and query `MonitoredResourceActive` heartbeats against a single central monitoring account.
+  - Ensure multi-account commercial license quotas (`max_resources` and `max_accounts`) are strictly and globally aggregated across decentralized Lambda deployments without requiring a centralized S3 hub.

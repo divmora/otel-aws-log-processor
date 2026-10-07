@@ -109,6 +109,7 @@ func ReadAndParseFromS3(ctx context.Context, logger *slog.Logger, s3Client *s3.C
 		}()
 	}
 
+	var scanErr error
 	// Start a goroutine to read lines and send to workers
 	go func() {
 		scanner := bufio.NewScanner(reader)
@@ -122,6 +123,7 @@ func ReadAndParseFromS3(ctx context.Context, logger *slog.Logger, s3Client *s3.C
 
 		if err := scanner.Err(); err != nil {
 			logger.Error("Error scanning S3 object", "error", err)
+			scanErr = err
 		}
 
 		close(linesChan)
@@ -137,6 +139,10 @@ func ReadAndParseFromS3(ctx context.Context, logger *slog.Logger, s3Client *s3.C
 	entries := make([]LogAdapter, 0)
 	for entry := range entriesChan {
 		entries = append(entries, entry)
+	}
+
+	if scanErr != nil {
+		return entries, fmt.Errorf("error reading S3 stream: %w", scanErr)
 	}
 
 	logger.Info("Parsed entries", "count", len(entries))
@@ -203,18 +209,18 @@ func ReadAndParseJSONFromS3(ctx context.Context, logger *slog.Logger, s3Client *
 		}()
 	}
 
+	var decodeErr error
 	// Start a goroutine to decode JSON objects and send to workers
 	go func() {
 		decoder := json.NewDecoder(reader)
 		for decoder.More() {
 			var raw json.RawMessage
 			if err := decoder.Decode(&raw); err != nil {
-				logger.Error("Error decoding JSON object", "error", err)
-				// Determine if we should stop or continue.
-				if err == io.EOF {
-					break
+				if err != io.EOF {
+					logger.Error("Error decoding JSON object", "error", err)
+					decodeErr = err
 				}
-				continue
+				break
 			}
 			data := make([]byte, len(raw))
 			copy(data, raw)
@@ -234,6 +240,10 @@ func ReadAndParseJSONFromS3(ctx context.Context, logger *slog.Logger, s3Client *
 	entries := make([]LogAdapter, 0)
 	for entry := range entriesChan {
 		entries = append(entries, entry)
+	}
+
+	if decodeErr != nil {
+		return entries, fmt.Errorf("error reading JSON stream from S3: %w", decodeErr)
 	}
 
 	logger.Info("Parsed entries", "count", len(entries))
@@ -291,6 +301,7 @@ func ReadAndParseParquetFromS3[T any](ctx context.Context, logger *slog.Logger, 
 		}()
 	}
 
+	var parquetErr error
 	go func() {
 		defer close(rowChan)
 		rows := make([]T, maxBatchSize)
@@ -303,6 +314,7 @@ func ReadAndParseParquetFromS3[T any](ctx context.Context, logger *slog.Logger, 
 			if err != nil {
 				if err != io.EOF {
 					logger.Error("Error reading parquet", "error", err)
+					parquetErr = err
 				}
 				break
 			}
@@ -317,6 +329,10 @@ func ReadAndParseParquetFromS3[T any](ctx context.Context, logger *slog.Logger, 
 	entries := make([]LogAdapter, 0)
 	for entry := range entriesChan {
 		entries = append(entries, entry)
+	}
+
+	if parquetErr != nil {
+		return entries, fmt.Errorf("error reading parquet from S3: %w", parquetErr)
 	}
 
 	logger.Info("Parsed entries", "count", len(entries))

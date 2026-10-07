@@ -204,6 +204,65 @@ func TestNLBAdapterExtractResourceAttributes(t *testing.T) {
 			t.Errorf("Unexpected attribute %s found when ARN is missing", attr.Key)
 		}
 	}
+
+	// Case 3: Without ChosenCertARN ("-"), but with AccountID and Region populated from S3 key context
+	entry3 := &parser.NLBLogEntry{
+		ChosenCertARN: "-",
+		ELB:           "net/my-load-balancer/50dc6c495c0c9188",
+	}
+	adapter3 := NLBAdapter{
+		NLBLogEntry: entry3,
+		AccountID:   "999988887777",
+		Region:      "eu-west-1",
+	}
+	attrs3 := adapter3.GetResourceAttributes()
+	expectedAttrs3 := map[string]string{
+		"cloud.provider":   "aws",
+		"cloud.platform":   "aws_elastic_load_balancing",
+		"service.name":     "nlb-log-parser",
+		"aws.lb.name":      "net/my-load-balancer/50dc6c495c0c9188",
+		"cloud.region":     "eu-west-1",
+		"cloud.account.id": "999988887777",
+	}
+	verifyAttributes(t, attrs3, expectedAttrs3)
+}
+
+func TestNLBAdapter_GetResourceKey(t *testing.T) {
+	// 1. ChosenCertARN present
+	a1 := NLBAdapter{
+		NLBLogEntry: &parser.NLBLogEntry{
+			ChosenCertARN: "arn:aws:acm:us-east-1:123456789012:certificate/abc",
+			ListenerID:    "arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/net/my-nlb/123/456",
+			ELB:           "net/my-nlb/123",
+		},
+	}
+	if key := a1.GetResourceKey(); key != "arn:aws:acm:us-east-1:123456789012:certificate/abc" {
+		t.Errorf("got %q, want cert ARN", key)
+	}
+
+	// 2. ChosenCertARN empty, ListenerID present
+	a2 := NLBAdapter{
+		NLBLogEntry: &parser.NLBLogEntry{
+			ChosenCertARN: "-",
+			ListenerID:    "arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/net/my-nlb/123/456",
+			ELB:           "net/my-nlb/123",
+		},
+	}
+	if key := a2.GetResourceKey(); key != "arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/net/my-nlb/123/456" {
+		t.Errorf("got %q, want listener ARN", key)
+	}
+
+	// 3. Both cert and listener empty/dash -> fallback to ELB
+	a3 := NLBAdapter{
+		NLBLogEntry: &parser.NLBLogEntry{
+			ChosenCertARN: "-",
+			ListenerID:    "-",
+			ELB:           "net/my-nlb/123",
+		},
+	}
+	if key := a3.GetResourceKey(); key != "net/my-nlb/123" {
+		t.Errorf("got %q, want ELB name", key)
+	}
 }
 
 func verifyAttributes(t *testing.T, attrs []model.OTelAttribute, expected map[string]string) {

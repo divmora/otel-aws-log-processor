@@ -3432,6 +3432,54 @@ func TestEnforce_CommercialProjectScopedLicense(t *testing.T) {
 	if !statusNonProd.Valid || statusNonProd.StatusReason != "non_prod_free" {
 		t.Errorf("expected non_prod_free fallback, got %+v", statusNonProd)
 	}
+
+	// 4. Omitted/empty runtime project with project-scoped license in production -> fails
+	optsEmptyProj := EnforcementOptions{
+		Environment:     "production",
+		ProjectName:     "",
+		BucketName:      "payments-prod-bucket",
+		LicenseKey:      token,
+		PublicKey:       testPubKey,
+		CallerAccountID: "123456789012",
+		EnforcementMode: "strict",
+		EvaluationTime:  now,
+	}
+	statusEmptyProj, errEmptyProj := Enforce(optsEmptyProj)
+	if errEmptyProj == nil {
+		t.Fatalf("expected project mismatch error when project is empty, got nil")
+	}
+	if !errors.Is(errEmptyProj, liblicense.ErrScopeMismatch) {
+		t.Errorf("expected ErrScopeMismatch for empty project, got %v", errEmptyProj)
+	}
+	if statusEmptyProj.Valid || statusEmptyProj.StatusReason != "project_mismatch" {
+		t.Errorf("expected project_mismatch status, got %+v", statusEmptyProj)
+	}
+
+	// 5. Preflight check with empty project also rejects immediately
+	statusPreflight, errPreflight := PreflightEnforce(optsEmptyProj)
+	if errPreflight == nil || !errors.Is(errPreflight, liblicense.ErrScopeMismatch) {
+		t.Errorf("expected PreflightEnforce to reject empty project with ErrScopeMismatch, got status: %+v, err: %v", statusPreflight, errPreflight)
+	}
+}
+
+func TestEnforce_EnvironmentVariableSpoofing_AutoMode(t *testing.T) {
+	// Under default auto mode, setting ENVIRONMENT=dev must NOT downgrade mode to warn when production indicators are present.
+	opts := EnforcementOptions{
+		Environment:     "dev",
+		BucketName:      "company-prod-alb-logs",
+		EnforcementMode: "auto",
+	}
+
+	status, err := Enforce(opts)
+	if err == nil {
+		t.Fatalf("expected ErrCommercialLicenseRequired in auto mode when production indicators are present, got nil")
+	}
+	if !errors.Is(err, ErrCommercialLicenseRequired) {
+		t.Errorf("expected ErrCommercialLicenseRequired, got: %v", err)
+	}
+	if status == nil || status.Valid || status.StatusReason != "unlicensed_production" {
+		t.Errorf("expected unlicensed_production status, got: %+v", status)
+	}
 }
 
 func TestDetectProductionIndicators_ProjectNameAndResourceARNs(t *testing.T) {

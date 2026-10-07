@@ -445,22 +445,22 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 	}
 	entitlement := bslPolicy.EvaluateEntitlement(usageReq)
 
-	// Resolve enforcement mode ("auto" default: strict for production, warn for non-production)
+	// 2. Non-Production Exemption Path
+	hasProd, indicatorReason := DetectProductionIndicators(opts)
+	token, _ := ResolveToken(opts.LicenseKey, opts.LicenseFile)
+
+	// Resolve enforcement mode ("auto" default: strict for production or suspected production, warn for non-production)
 	mode := strings.ToLower(strings.TrimSpace(opts.EnforcementMode))
 	if mode == "" {
 		mode = strings.ToLower(strings.TrimSpace(os.Getenv("DIVMORA_LICENSE_MODE")))
 	}
 	if mode == "" || mode == "auto" {
-		if !isNonProd && !entitlement.Authorized {
-			mode = "strict" // Strict mode default for production
+		if hasProd || (!isNonProd && !entitlement.Authorized) {
+			mode = "strict" // Strict mode default for production or suspected production
 		} else {
 			mode = "warn" // Warn mode default for non-production
 		}
 	}
-
-	// 2. Non-Production Exemption Path
-	hasProd, indicatorReason := DetectProductionIndicators(opts)
-	token, _ := ResolveToken(opts.LicenseKey, opts.LicenseFile)
 
 	if isNonProd || entitlement.Authorized {
 		if token != "" {
@@ -773,9 +773,14 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 		if expectedProj == "" {
 			expectedProj = strings.TrimSpace(status.Claims.Metadata["project_id"])
 		}
-		if expectedProj != "" && projectName != "" && !strings.EqualFold(expectedProj, projectName) {
-			mismatchMsg := fmt.Sprintf("COMMERCIAL LICENSE PROJECT MISMATCH: License authorizes project '%s' but runtime project is '%s'",
-				expectedProj, projectName)
+		if expectedProj != "" && (projectName == "" || !strings.EqualFold(expectedProj, projectName)) {
+			var mismatchMsg string
+			if projectName == "" {
+				mismatchMsg = fmt.Sprintf("COMMERCIAL LICENSE PROJECT MISMATCH: License authorizes project '%s' but runtime project is not configured", expectedProj)
+			} else {
+				mismatchMsg = fmt.Sprintf("COMMERCIAL LICENSE PROJECT MISMATCH: License authorizes project '%s' but runtime project is '%s'",
+					expectedProj, projectName)
+			}
 			slog.Warn(mismatchMsg, "authorized_project", expectedProj, "runtime_project", projectName, "contact", "licensing@divmora.com")
 			status.Valid = false
 			status.StatusReason = "project_mismatch"

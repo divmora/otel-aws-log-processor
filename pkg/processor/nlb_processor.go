@@ -32,6 +32,8 @@ func (p *NLBProcessor) Matches(bucket, key string) bool {
 }
 
 func (p *NLBProcessor) Process(ctx context.Context, logger *slog.Logger, s3Client *s3.Client, bucket, key string) ([]LogAdapter, error) {
+	accountID, region := utils.ParseRegionAccountFromS3Key(key)
+
 	return ReadAndParseFromS3(ctx, logger, s3Client, bucket, key, p.MaxBatchSize, p.MaxConcurrent, func(line string) (LogAdapter, error) {
 		entry, err := p.Parser.ParseLogLine(line)
 		if err != nil {
@@ -40,13 +42,19 @@ func (p *NLBProcessor) Process(ctx context.Context, logger *slog.Logger, s3Clien
 		if entry == nil {
 			return nil, nil
 		}
-		return NLBAdapter{entry}, nil
+		return NLBAdapter{
+			NLBLogEntry: entry,
+			AccountID:   accountID,
+			Region:      region,
+		}, nil
 	}, p.ByteTracker)
 }
 
 // NLBAdapter implementation
 type NLBAdapter struct {
 	*parser.NLBLogEntry
+	AccountID string
+	Region    string
 }
 
 func (a NLBAdapter) GetResourceKey() string {
@@ -54,6 +62,9 @@ func (a NLBAdapter) GetResourceKey() string {
 	if arn == "" || arn == "-" {
 		// Fallback to ListenerID or ELB name
 		arn = a.NLBLogEntry.ListenerID // often contains ARN
+	}
+	if arn == "" || arn == "-" {
+		arn = a.NLBLogEntry.ELB
 	}
 	return arn
 }
@@ -80,6 +91,9 @@ func (a NLBAdapter) GetResourceAttributes() []model.OTelAttribute {
 			attrs = append(attrs, model.OTelAttribute{Key: "cloud.account.id", Value: model.StringValue(accountID)})
 		}
 	}
+
+	// Fill missing cloud region and account attributes from S3 key context
+	attrs = model.EnsureRegionAccountAttributes(attrs, a.Region, a.AccountID)
 
 	return attrs
 }

@@ -235,27 +235,31 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 	regRegion := license.ResolveRegistryRegion(claims)
 	cwRegistry := getCloudWatchRegistry(regRegion)
 
-	if preflightErr != nil && license.IsDeterministicLicenseError(preflightErr) {
-		logger.Error("Preflight license verification failed in strict mode: terminating batch processing to prevent SQS retry loop",
-			"error", preflightErr,
-			"environment", env,
-			"caller_account", callerAccount,
-			"registry_region", regRegion,
-			"action", failureAction,
-		)
-		license.EmitMetrics(ctx, getCloudWatchClient, preflightStatus, env, 0, getActiveResourceCount(regRegion), quotaTracker.TotalBytesProcessed())
+	if preflightErr != nil {
+		if license.IsDeterministicLicenseError(preflightErr) {
+			logger.Error("Preflight license verification failed in strict mode: terminating batch processing to prevent SQS retry loop",
+				"error", preflightErr,
+				"environment", env,
+				"caller_account", callerAccount,
+				"registry_region", regRegion,
+				"action", failureAction,
+			)
+			license.EmitMetrics(ctx, getCloudWatchClient, preflightStatus, env, 0, getActiveResourceCount(regRegion), quotaTracker.TotalBytesProcessed())
 
-		if failureAction == "dlq" {
-			for _, rec := range sqsEvent.Records {
-				response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{
-					ItemIdentifier: rec.MessageId,
-				})
+			if failureAction == "dlq" {
+				for _, rec := range sqsEvent.Records {
+					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{
+						ItemIdentifier: rec.MessageId,
+					})
+				}
+			} else {
+				response.BatchItemFailures = []events.SQSBatchItemFailure{}
 			}
-		} else {
-			response.BatchItemFailures = []events.SQSBatchItemFailure{}
+			// Return nil error to SQS poller so SQS does not treat invocation as a crash
+			return response, nil
 		}
-		// Return nil error to SQS poller so SQS does not treat invocation as a crash
-		return response, nil
+		logger.Error("Preflight license verification failed", "error", preflightErr)
+		return response, preflightErr
 	}
 
 	var allEntries []processor.LogAdapter

@@ -666,3 +666,17 @@ func TestPublishCrossRegionMetrics_WithProject(t *testing.T) {
 		t.Errorf("expected Project dimension with value 'checkout-payments' in cross-region metrics")
 	}
 }
+
+func TestCloudWatchRegistry_PublishHeartbeats_AccessDenied(t *testing.T) {
+	mockCW := newMockCloudWatchRegistryAPI()
+	mockCW.putErr = errors.New("AccessDenied: User is not authorized to perform: cloudwatch:PutMetricData")
+
+	reg := NewCloudWatchRegistry(mockCW)
+	_, err := reg.RegisterAndCount(context.Background(), "ent_access_denied", []string{"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/test/123"}, time.Now())
+	if err == nil {
+		t.Fatalf("expected error when PutMetricData returns AccessDenied, got nil")
+	}
+	if !errors.Is(err, ErrCloudWatchRegistryAccessDenied) {
+		t.Errorf("expected ErrCloudWatchRegistryAccessDenied, got: %v", err)
+	}
+}
