@@ -3174,3 +3174,127 @@ func TestEnforce_CommercialLicenseInDev_AccountMismatch(t *testing.T) {
 		t.Errorf("expected valid=true and status=non_prod_free, got valid=%v, status=%s", statusWarn.Valid, statusWarn.StatusReason)
 	}
 }
+
+func TestEnforce_ProductionStrictModeDefault(t *testing.T) {
+	// When EnforcementMode is empty and DIVMORA_LICENSE_MODE is unset or "auto",
+	// production defaults strictly to strict mode (rejects unlicensed production)
+	opts := EnforcementOptions{
+		Environment:     "production",
+		CallerAccountID: "123456789012",
+	}
+
+	status, err := Enforce(opts)
+	if err == nil {
+		t.Fatal("expected unlicensed production to fail by default under auto/strict enforcement")
+	}
+	if status == nil || status.Valid {
+		t.Errorf("expected status.Valid=false")
+	}
+	if status.StatusReason != "unlicensed_production" {
+		t.Errorf("expected StatusReason=unlicensed_production, got: %s", status.StatusReason)
+	}
+}
+
+func TestEnforce_NonProductionMaxResources(t *testing.T) {
+	generateARNs := func(n int) []string {
+		arns := make([]string, n)
+		for i := 0; i < n; i++ {
+			arns[i] = fmt.Sprintf("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/alb-%d/hash", i)
+		}
+		return arns
+	}
+
+	// 1. Within limit: 10 resources in non-production
+	withinTracker := NewResourceTracker()
+	withinOpts := EnforcementOptions{
+		Environment:        "staging",
+		SourceResourceARNs: generateARNs(10),
+		ResourceTracker:    withinTracker,
+		EnforcementMode:    "strict",
+	}
+	status1, err1 := Enforce(withinOpts)
+	if err1 != nil {
+		t.Fatalf("unexpected error for 10 resources in non-prod: %v", err1)
+	}
+	if !status1.Valid || status1.StatusReason != "non_prod_free" {
+		t.Errorf("expected valid non_prod_free, got valid=%v, reason=%s", status1.Valid, status1.StatusReason)
+	}
+
+	// 2. Exceeding limit: 11 resources in non-production (warn mode)
+	warnTracker := NewResourceTracker()
+	warnOpts := EnforcementOptions{
+		Environment:        "staging",
+		SourceResourceARNs: generateARNs(11),
+		ResourceTracker:    warnTracker,
+		EnforcementMode:    "warn",
+	}
+	status2, err2 := Enforce(warnOpts)
+	if err2 != nil {
+		t.Fatalf("unexpected error in warn mode: %v", err2)
+	}
+	if !status2.Valid {
+		t.Errorf("expected valid=true in warn mode")
+	}
+	if !status2.QuotaExceeded || status2.StatusReason != "quota_exceeded" {
+		t.Errorf("expected quota_exceeded, got QuotaExceeded=%v, reason=%s", status2.QuotaExceeded, status2.StatusReason)
+	}
+
+	// 3. Exceeding limit: 11 resources in non-production (strict mode)
+	strictTracker := NewResourceTracker()
+	strictOpts := EnforcementOptions{
+		Environment:        "staging",
+		SourceResourceARNs: generateARNs(11),
+		ResourceTracker:    strictTracker,
+		EnforcementMode:    "strict",
+	}
+	status3, err3 := Enforce(strictOpts)
+	if err3 == nil {
+		t.Fatal("expected error in strict mode when exceeding 10 resources in non-prod")
+	}
+	if !errors.Is(err3, ErrResourceQuotaExceeded) {
+		t.Errorf("expected ErrResourceQuotaExceeded, got: %v", err3)
+	}
+	if status3 == nil || status3.Valid {
+		t.Errorf("expected status3.Valid=false")
+	}
+
+	// 4. Exceeding 10 resources in non-production WITH a valid commercial Pro license (25 resources)
+	SetVerificationPublicKey(testPubKey)
+	defer ResetVerificationPublicKey()
+
+	now := time.Now().UTC()
+	claims := &Claims{
+		ID: "lic_dev_25_res",
+		Customer: Customer{
+			Name: "Pro Customer",
+		},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierPro,
+		Scope:     &Scope{Accounts: []string{"123456789012"}},
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+		Limits: &Limits{
+			MaxResources: 25,
+		},
+	}
+	token := signTestToken(claims, testPrivKey)
+
+	proTracker := NewResourceTracker()
+	proOpts := EnforcementOptions{
+		Environment:        "staging",
+		BucketName:         "my-staging-bucket",
+		LicenseKey:         token,
+		CallerAccountID:    "123456789012",
+		SourceResourceARNs: generateARNs(15), // 15 resources (>10 non-prod cap, but <25 pro quota)
+		ResourceTracker:    proTracker,
+		EnforcementMode:    "strict",
+		EvaluationTime:     now,
+	}
+	statusPro, errPro := Enforce(proOpts)
+	if errPro != nil {
+		t.Fatalf("unexpected error for commercial license with 15 resources: %v", errPro)
+	}
+	if !statusPro.Valid || statusPro.StatusReason != "valid" {
+		t.Errorf("expected commercial license to authorize 15 resources: valid=%v, reason=%s", statusPro.Valid, statusPro.StatusReason)
+	}
+}

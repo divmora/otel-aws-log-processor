@@ -225,7 +225,7 @@ In each external source account:
 | `MaxBatchSize` | Number | `500` | Max OTel log records per outbound HTTP request. |
 | `MaxConcurrent` | Number | `10` | Max concurrent log file parsers and HTTP sender routines. |
 | `DivmoraLicenseKey` | String | `""` | Optional commercial license key (free for non-prod). |
-| `DivmoraLicenseMode` | String | `warn` | `warn` (emit metrics and notices) or `strict` (terminate if unlicensed). |
+| `DivmoraLicenseMode` | String | `auto` | `auto` (default: strict in production, warn in non-production), `strict` (terminate on license breach), or `warn` (emit metrics and notices without blocking). |
 | `DivmoraLicenseFailureAction` | String | `discard` | Behavior on deterministic license compliance failure in strict mode (`discard` drops messages to prevent SQS ESM retry billing storms, `dlq` routes directly to DLQ). |
 | `DivmoraCrlUrl` | String | `""` | Optional HTTPS URL for online Certificate Revocation List (CRL) distribution synchronization. |
 | `LogSourceBucketArns` | CommaDelimitedList | `*` | Comma-separated list of S3 bucket and object ARN patterns (provide both bucket ARN and `/*` wildcard object ARN, e.g. `arn:aws:s3:::my-logs,arn:aws:s3:::my-logs/*`, or `*`). |

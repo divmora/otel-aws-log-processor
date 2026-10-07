@@ -420,13 +420,17 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 	}
 	entitlement := bslPolicy.EvaluateEntitlement(usageReq)
 
-	// Resolve enforcement mode ("warn" default vs "strict")
+	// Resolve enforcement mode ("auto" default: strict for production, warn for non-production)
 	mode := strings.ToLower(strings.TrimSpace(opts.EnforcementMode))
 	if mode == "" {
 		mode = strings.ToLower(strings.TrimSpace(os.Getenv("DIVMORA_LICENSE_MODE")))
 	}
-	if mode == "" {
-		mode = "warn"
+	if mode == "" || mode == "auto" {
+		if !isNonProd && !entitlement.Authorized {
+			mode = "strict" // Strict mode default for production
+		} else {
+			mode = "warn" // Warn mode default for non-production
+		}
 	}
 
 	// 2. Non-Production Exemption Path
@@ -465,7 +469,7 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 			quotaExceeded := false
 			var quotaReason string
 
-			// Fair-use quota checks
+			// 1. Fair-use in-container rate ceilings (batch density & container records)
 			if opts.QuotaTracker != nil && opts.BatchRecordCount > 0 {
 				// Check single-invocation density
 				if densityExceeded, reason := opts.QuotaTracker.CheckBatchDensity(opts.BatchRecordCount); densityExceeded {
@@ -486,6 +490,52 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 						"cumulative_records", total,
 					)
 				}
+			}
+
+			// 2. Track and verify active monitored resources in non-production (Max 10 for free non-prod)
+			if opts.ResourceTracker != nil {
+				for _, res := range opts.SourceResourceARNs {
+					if res != "" {
+						opts.ResourceTracker.Track(res)
+					}
+				}
+			}
+
+			activeResources := 0
+			entitlementKey := ResolveEntitlementKey(nil, env)
+			if opts.CloudWatchRegistry != nil {
+				count, regErr := opts.CloudWatchRegistry.RegisterAndCount(opts.Context, entitlementKey, opts.SourceResourceARNs, evalTime)
+				if regErr != nil {
+					slog.Warn("Failed to synchronize non-production resource registry with CloudWatch",
+						"error", regErr,
+						"namespace", opts.CloudWatchRegistry.namespace,
+						"entitlement_key", entitlementKey,
+					)
+					if mode == "strict" && IsDeterministicLicenseError(regErr) {
+						return &ValidationStatus{
+							Valid:        false,
+							StatusReason: "registry_error",
+							Message:      regErr.Error(),
+						}, regErr
+					}
+				}
+				activeResources = count
+			} else if opts.ResourceTracker != nil {
+				activeResources = opts.ResourceTracker.Count()
+			} else {
+				activeResources = len(opts.SourceResourceARNs)
+			}
+
+			if activeResources > DefaultMaxNonProdResources {
+				quotaExceeded = true
+				quotaReason = fmt.Sprintf("active monitored resources (%d) exceeds non-production free limit (%d); a commercial or trial license key is required to monitor >%d resources",
+					activeResources, DefaultMaxNonProdResources, DefaultMaxNonProdResources)
+				slog.Warn("NON-PRODUCTION RESOURCE LIMIT EXCEEDED",
+					"active_resources", activeResources,
+					"max_free_resources", DefaultMaxNonProdResources,
+					"contact", "licensing@divmora.com",
+					"hint", fmt.Sprintf("Obtain a commercial or trial license key to monitor more than %d resources", DefaultMaxNonProdResources),
+				)
 			}
 
 			statusReason := "non_prod_free"

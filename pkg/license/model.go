@@ -16,6 +16,10 @@ import (
 // after a license token expires during which warnings are emitted before hard-blocking.
 const DefaultGracePeriodDays = 14
 
+// DefaultMaxNonProdResources defines the maximum active monitored resources allowed in free non-production (10).
+// Workloads exceeding 10 active monitored resources require a commercial or trial license key.
+const DefaultMaxNonProdResources = 10
+
 // License tier constants.
 const (
 	TierCommunity  = "community"

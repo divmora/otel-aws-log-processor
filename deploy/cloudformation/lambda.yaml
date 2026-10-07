@@ -207,13 +207,15 @@ Parameters:
 
   DivmoraLicenseMode:
     Type: String
-    Default: warn
+    Default: auto
     AllowedValues:
-      - warn
+      - auto
       - strict
+      - warn
     Description: >
-      Enforcement mode: 'warn' logs compliance notices and emits CloudWatch EMF metrics without blocking;
-      'strict' terminates processing if commercial license is missing or expired in production.
+      Enforcement mode: 'auto' (default: strictly terminates unlicensed production workloads, while warning in non-production);
+      'strict' terminates processing if commercial license is missing, expired, or resource quota is breached;
+      'warn' logs compliance notices and emits CloudWatch EMF metrics without blocking.
 
   DivmoraLicenseFailureAction:
     Type: String
