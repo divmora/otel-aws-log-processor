@@ -692,9 +692,14 @@ Resources:
       AlarmDescription: Triggers when deterministic license compliance violations occur in production
       Namespace: Divmora/LogProcessor
       MetricName: LicenseViolations
-      Dimensions:
-        - Name: Environment
-          Value: !Ref EnvironmentName
+      Dimensions: !If
+        - HasProjectName
+        - - Name: Environment
+            Value: !Ref EnvironmentName
+          - Name: Project
+            Value: !Ref ProjectName
+        - - Name: Environment
+            Value: !Ref EnvironmentName
       Statistic: Sum
       Period: 300
       EvaluationPeriods: 1

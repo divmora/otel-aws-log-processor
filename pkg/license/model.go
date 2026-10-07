@@ -650,6 +650,26 @@ func ResolveCentralMetricsRegion(c *Claims) string {
 	return "us-east-1"
 }
 
+// ResolveRegistryRegion determines the target AWS region for the CloudWatch distributed resource registry.
+// If the license token specifies a global registry (Metadata["registry_scope"] == "global")
+// or explicitly defines a registry region (Metadata["registry_region"]), that centralized region is used.
+// Otherwise, it defaults to the local executing region (GetCurrentRegion()) for zero-latency regional isolation.
+// For non-production or testing, the DIVMORA_LICENSE_REGISTRY_REGION environment variable may override this.
+func ResolveRegistryRegion(c *Claims) string {
+	if c != nil && c.Metadata != nil {
+		if r := strings.TrimSpace(c.Metadata["registry_region"]); r != "" {
+			return r
+		}
+		if strings.EqualFold(strings.TrimSpace(c.Metadata["registry_scope"]), "global") {
+			return ResolveCentralMetricsRegion(c)
+		}
+	}
+	if envReg := strings.TrimSpace(os.Getenv("DIVMORA_LICENSE_REGISTRY_REGION")); envReg != "" {
+		return envReg
+	}
+	return GetCurrentRegion()
+}
+
 // ResolveEntitlementKey determines the canonical scoping dimension for resource registry metrics.
 // Resolution Order:
 // 1. Metadata["subscription_id"] (Explicit subscription lineage across annual renewals - Strategy 1)

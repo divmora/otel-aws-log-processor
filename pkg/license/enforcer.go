@@ -1182,6 +1182,7 @@ func PublishCrossRegionMetrics(ctx context.Context, cw CloudWatchMetricAPI, stat
 	}
 
 	now := time.Now().UTC()
+	proj := strings.TrimSpace(os.Getenv("PROJECT_NAME"))
 
 	// 1. Divmora/LogProcessor metrics
 	dimsFull := []cwtypes.Dimension{
@@ -1197,8 +1198,30 @@ func PublishCrossRegionMetrics(ctx context.Context, cw CloudWatchMetricAPI, stat
 		{Name: aws.String("Environment"), Value: aws.String(env)},
 	}
 
+	var dimSets [][]cwtypes.Dimension
+	if proj != "" {
+		dimSets = append(dimSets,
+			[]cwtypes.Dimension{
+				{Name: aws.String("Environment"), Value: aws.String(env)},
+				{Name: aws.String("Project"), Value: aws.String(proj)},
+				{Name: aws.String("Status"), Value: aws.String(statusTag)},
+				{Name: aws.String("Region"), Value: aws.String(currentRegion)},
+			},
+			[]cwtypes.Dimension{
+				{Name: aws.String("Environment"), Value: aws.String(env)},
+				{Name: aws.String("Project"), Value: aws.String(proj)},
+				{Name: aws.String("Region"), Value: aws.String(currentRegion)},
+			},
+			[]cwtypes.Dimension{
+				{Name: aws.String("Environment"), Value: aws.String(env)},
+				{Name: aws.String("Project"), Value: aws.String(proj)},
+			},
+		)
+	}
+	dimSets = append(dimSets, dimsFull, dimsEnvRegion, dimsEnvOnly)
+
 	var logProcessorData []cwtypes.MetricDatum
-	for _, dims := range [][]cwtypes.Dimension{dimsFull, dimsEnvRegion, dimsEnvOnly} {
+	for _, dims := range dimSets {
 		logProcessorData = append(logProcessorData,
 			cwtypes.MetricDatum{
 				MetricName: aws.String("RecordsProcessed"),
@@ -1258,8 +1281,18 @@ func PublishCrossRegionMetrics(ctx context.Context, cw CloudWatchMetricAPI, stat
 			{Name: aws.String("Tier"), Value: aws.String(tier)},
 		}
 
+		var licDimSets [][]cwtypes.Dimension
+		if proj != "" {
+			licDimSets = append(licDimSets, []cwtypes.Dimension{
+				{Name: aws.String("LicenseID"), Value: aws.String(licenseID)},
+				{Name: aws.String("Project"), Value: aws.String(proj)},
+				{Name: aws.String("Tier"), Value: aws.String(tier)},
+			})
+		}
+		licDimSets = append(licDimSets, dimsLicFull, dimsLicAgg)
+
 		var licenseData []cwtypes.MetricDatum
-		for _, dims := range [][]cwtypes.Dimension{dimsLicFull, dimsLicAgg} {
+		for _, dims := range licDimSets {
 			licenseData = append(licenseData,
 				cwtypes.MetricDatum{
 					MetricName: aws.String("BytesProcessed"),

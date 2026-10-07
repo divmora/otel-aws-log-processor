@@ -15,14 +15,15 @@ import (
 
 // mockCloudWatchRegistryAPI implements CloudWatchRegistryAPI with in-memory storage for testing.
 type mockCloudWatchRegistryAPI struct {
-	mu         sync.Mutex
-	dataPoints map[string]map[string][]time.Time // entitlementKey -> resourceARN -> []timestamps
-	putCalls   int
-	listCalls  int
-	getCalls   int
-	putErr     error
-	listErr    error
-	getErr     error
+	mu           sync.Mutex
+	dataPoints   map[string]map[string][]time.Time // entitlementKey -> resourceARN -> []timestamps
+	recordedData []cwtypes.MetricDatum
+	putCalls     int
+	listCalls    int
+	getCalls     int
+	putErr       error
+	listErr      error
+	getErr       error
 }
 
 func newMockCloudWatchRegistryAPI() *mockCloudWatchRegistryAPI {
@@ -38,6 +39,8 @@ func (m *mockCloudWatchRegistryAPI) PutMetricData(ctx context.Context, params *c
 	if m.putErr != nil {
 		return nil, m.putErr
 	}
+
+	m.recordedData = append(m.recordedData, params.MetricData...)
 
 	for _, datum := range params.MetricData {
 		var entitlementKey, resourceARN string
@@ -590,5 +593,83 @@ func TestCloudWatchRegistry_MultipleProjectsIsolation(t *testing.T) {
 	})
 	if errAna != nil || !statusAna.Valid {
 		t.Fatalf("Analytics project should be isolated from Payments: err=%v, valid=%v", errAna, statusAna.Valid)
+	}
+}
+
+func TestResolveRegistryRegion(t *testing.T) {
+	// 1. Nil claims defaults to GetCurrentRegion()
+	reg := ResolveRegistryRegion(nil)
+	if reg != GetCurrentRegion() {
+		t.Errorf("got %s, want %s", reg, GetCurrentRegion())
+	}
+
+	// 2. Claims with registry_scope: "global" defaults to central metrics region (us-east-1)
+	claimsGlobal := &Claims{
+		Metadata: map[string]string{
+			"registry_scope": "global",
+		},
+	}
+	if reg := ResolveRegistryRegion(claimsGlobal); reg != "us-east-1" {
+		t.Errorf("got %s, want us-east-1 for global registry", reg)
+	}
+
+	// 3. Claims with explicit registry_region
+	claimsExplicit := &Claims{
+		Metadata: map[string]string{
+			"registry_region": "eu-central-1",
+		},
+	}
+	if reg := ResolveRegistryRegion(claimsExplicit); reg != "eu-central-1" {
+		t.Errorf("got %s, want eu-central-1", reg)
+	}
+
+	// 4. Claims with registry_scope: "global" and custom metrics_region
+	claimsGlobalCustom := &Claims{
+		Metadata: map[string]string{
+			"registry_scope": "global",
+			"metrics_region": "ap-southeast-1",
+		},
+	}
+	if reg := ResolveRegistryRegion(claimsGlobalCustom); reg != "ap-southeast-1" {
+		t.Errorf("got %s, want ap-southeast-1", reg)
+	}
+
+	// 5. Environment variable override
+	t.Setenv("DIVMORA_LICENSE_REGISTRY_REGION", "sa-east-1")
+	if reg := ResolveRegistryRegion(nil); reg != "sa-east-1" {
+		t.Errorf("got %s, want sa-east-1 from env override", reg)
+	}
+	t.Setenv("DIVMORA_LICENSE_REGISTRY_REGION", "")
+}
+
+func TestPublishCrossRegionMetrics_WithProject(t *testing.T) {
+	t.Setenv("PROJECT_NAME", "checkout-payments")
+	defer t.Setenv("PROJECT_NAME", "")
+
+	mockCW := newMockCloudWatchRegistryAPI()
+	status := &ValidationStatus{
+		Valid:        true,
+		StatusReason: "valid",
+	}
+
+	err := PublishCrossRegionMetrics(context.Background(), mockCW, status, "production", 100, 2, int64(1000))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mockCW.mu.Lock()
+	defer mockCW.mu.Unlock()
+
+	foundProjectDim := false
+	for _, datum := range mockCW.recordedData {
+		for _, d := range datum.Dimensions {
+			if d.Name != nil && *d.Name == "Project" && d.Value != nil && *d.Value == "checkout-payments" {
+				foundProjectDim = true
+				break
+			}
+		}
+	}
+	if !foundProjectDim {
+		t.Errorf("expected Project dimension with value 'checkout-payments' in cross-region metrics")
 	}
 }

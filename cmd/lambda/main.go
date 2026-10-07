@@ -29,13 +29,14 @@ var (
 	awsConfig       aws.Config
 	cwClients       = make(map[string]*cloudwatch.Client)
 	cwMu            sync.RWMutex
+	cwRegistries    = make(map[string]*license.CloudWatchRegistry)
+	regMu           sync.RWMutex
 	logger          *slog.Logger
 	maxConcurrent   int
 	registry        *processor.Registry
 	otlpClient      *sender.OTLPClient
 	quotaTracker    *license.QuotaTracker
 	resourceTracker *license.ResourceTracker
-	cwRegistry      *license.CloudWatchRegistry
 )
 
 func getCloudWatchClientRaw(targetRegion string) *cloudwatch.Client {
@@ -63,9 +64,38 @@ func getCloudWatchClient(targetRegion string) license.CloudWatchMetricAPI {
 	return getCloudWatchClientRaw(targetRegion)
 }
 
-func getActiveResourceCount() int {
-	if cwRegistry != nil && cwRegistry.Count() > 0 {
-		return cwRegistry.Count()
+func getCloudWatchRegistry(targetRegion string) *license.CloudWatchRegistry {
+	if targetRegion == "" {
+		targetRegion = license.GetCurrentRegion()
+	}
+	regMu.RLock()
+	reg, ok := cwRegistries[targetRegion]
+	regMu.RUnlock()
+	if ok {
+		return reg
+	}
+
+	regMu.Lock()
+	defer regMu.Unlock()
+	if reg, ok := cwRegistries[targetRegion]; ok {
+		return reg
+	}
+
+	reg = license.NewCloudWatchRegistry(getCloudWatchClientRaw(targetRegion))
+	cwRegistries[targetRegion] = reg
+	return reg
+}
+
+func getActiveResourceCount(targetRegion ...string) int {
+	var region string
+	if len(targetRegion) > 0 && targetRegion[0] != "" {
+		region = targetRegion[0]
+	} else {
+		region = license.GetCurrentRegion()
+	}
+	reg := getCloudWatchRegistry(region)
+	if reg != nil && reg.Count() > 0 {
+		return reg.Count()
 	}
 	if resourceTracker != nil {
 		return resourceTracker.Count()
@@ -117,8 +147,8 @@ func init() {
 	// Initialize Container Resource Tracker
 	resourceTracker = license.NewResourceTracker()
 
-	// Initialize CloudWatch Distributed Resource Registry
-	cwRegistry = license.NewCloudWatchRegistry(getCloudWatchClientRaw(license.GetCurrentRegion()))
+	// Initialize CloudWatch Distributed Resource Registry for local region
+	_ = getCloudWatchRegistry(license.GetCurrentRegion())
 
 	// Initialize Registry
 	registry = processor.NewRegistry()
@@ -198,14 +228,22 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 		CallerAccountID:   callerAccount,
 		AuthoritativeTime: authTime,
 	})
+	var claims *license.Claims
+	if preflightStatus != nil {
+		claims = preflightStatus.Claims
+	}
+	regRegion := license.ResolveRegistryRegion(claims)
+	cwRegistry := getCloudWatchRegistry(regRegion)
+
 	if preflightErr != nil && license.IsDeterministicLicenseError(preflightErr) {
 		logger.Error("Preflight license verification failed in strict mode: terminating batch processing to prevent SQS retry loop",
 			"error", preflightErr,
 			"environment", env,
 			"caller_account", callerAccount,
+			"registry_region", regRegion,
 			"action", failureAction,
 		)
-		license.EmitCloudWatchEMF(preflightStatus, env, 0, getActiveResourceCount(), quotaTracker.TotalBytesProcessed())
+		license.EmitCloudWatchEMF(preflightStatus, env, 0, getActiveResourceCount(regRegion), quotaTracker.TotalBytesProcessed())
 
 		if failureAction == "dlq" {
 			for _, rec := range sqsEvent.Records {
@@ -401,7 +439,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 				"caller_account", callerAccount,
 				"action", failureAction,
 			)
-			license.EmitMetrics(ctx, getCloudWatchClient, licStatus, env, len(allEntries), getActiveResourceCount(), quotaTracker.TotalBytesProcessed(), sourceResources)
+			license.EmitMetrics(ctx, getCloudWatchClient, licStatus, env, len(allEntries), getActiveResourceCount(regRegion), quotaTracker.TotalBytesProcessed(), sourceResources)
 
 			if failureAction == "dlq" {
 				for _, rec := range sqsEvent.Records {
@@ -431,7 +469,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 	}
 
 	// Emit CloudWatch Metric (asynchronous stdout EMF + cross-region PutMetricData if applicable)
-	license.EmitMetrics(ctx, getCloudWatchClient, licStatus, env, len(allEntries), getActiveResourceCount(), quotaTracker.TotalBytesProcessed(), sourceResources)
+	license.EmitMetrics(ctx, getCloudWatchClient, licStatus, env, len(allEntries), getActiveResourceCount(regRegion), quotaTracker.TotalBytesProcessed(), sourceResources)
 
 	logger.Info("Lambda execution completed", "failures", len(response.BatchItemFailures))
 	return response, nil
