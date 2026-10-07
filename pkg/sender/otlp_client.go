@@ -143,6 +143,9 @@ func (c *OTLPClient) SendLogs(ctx context.Context, entries []processor.LogAdapte
 
 	c.Logger.Info("Grouped logs", "resource_group_count", len(grouped))
 
+	sendCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	// Concurrency control
 	sem := make(chan struct{}, c.MaxConcurrent)
 	var wg sync.WaitGroup
@@ -151,6 +154,7 @@ func (c *OTLPClient) SendLogs(ctx context.Context, entries []processor.LogAdapte
 	totalSent := 0
 	var sentLock sync.Mutex
 
+dispatchLoop:
 	// Send each group in batches
 	for resKey, group := range grouped {
 		groupLog := c.Logger.With("resource_key", resKey, "total_logs", len(group.LogRecords))
@@ -159,12 +163,10 @@ func (c *OTLPClient) SendLogs(ctx context.Context, entries []processor.LogAdapte
 		// Split into batches
 		batchCount := 0
 		for i := 0; i < len(group.LogRecords); i += c.MaxBatchSize {
-			// Check for context cancellation or previous batch errors
+			// Check for context cancellation or previous batch errors before spawning more workers
 			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case err := <-errChan:
-				return err
+			case <-sendCtx.Done():
+				break dispatchLoop
 			default:
 			}
 
@@ -184,11 +186,7 @@ func (c *OTLPClient) SendLogs(ctx context.Context, entries []processor.LogAdapte
 
 				// Acquire semaphore or abort on context cancellation
 				select {
-				case <-ctx.Done():
-					select {
-					case errChan <- ctx.Err():
-					default:
-					}
+				case <-sendCtx.Done():
 					return
 				case sem <- struct{}{}:
 					defer func() { <-sem }()
@@ -196,12 +194,13 @@ func (c *OTLPClient) SendLogs(ctx context.Context, entries []processor.LogAdapte
 
 				log.Info("Sending batch", "batch_id", bID, "batch_size", bSize)
 
-				if err := c.sendWithRetry(ctx, p); err != nil {
+				if err := c.sendWithRetry(sendCtx, p); err != nil {
 					log.Error("Failed to send batch", "batch_id", bID, "error", err)
 					select {
 					case errChan <- fmt.Errorf("failed to send batch %d: %w", bID, err):
 					default:
 					}
+					cancel()
 					return
 				}
 
@@ -214,7 +213,7 @@ func (c *OTLPClient) SendLogs(ctx context.Context, entries []processor.LogAdapte
 		}
 	}
 
-	// Wait for all batches to complete
+	// Wait for all launched batches to complete or abort
 	wg.Wait()
 
 	// Check for any errors that occurred
@@ -222,6 +221,10 @@ func (c *OTLPClient) SendLogs(ctx context.Context, entries []processor.LogAdapte
 	case err := <-errChan:
 		return err
 	default:
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	c.Logger.Info("Successfully sent all logs", "total_sent", totalSent, "resource_groups", len(grouped))

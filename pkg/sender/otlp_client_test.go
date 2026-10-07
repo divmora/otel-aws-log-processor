@@ -326,3 +326,32 @@ func TestOTLPClient_HTTPClientConnectionReuse(t *testing.T) {
 		t.Errorf("expected MaxIdleConnsPerHost >= 4, got %d", tr.MaxIdleConnsPerHost)
 	}
 }
+
+func TestOTLPClient_BatchFailureCleansUpGoroutines(t *testing.T) {
+	var requestCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt32(&requestCount, 1)
+		if count == 1 {
+			w.WriteHeader(http.StatusBadRequest) // 400 non-retryable error
+			_, _ = w.Write([]byte(`{"error":"bad_request"}`))
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"success"}`))
+	}))
+	defer server.Close()
+
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	client := NewOTLPClient(server.URL, "", "", 0, 1, 4, logger)
+
+	var adapters []processor.LogAdapter
+	for i := 0; i < 5; i++ {
+		adapters = append(adapters, &mockAdapter{resourceKey: "res1"})
+	}
+
+	err := client.SendLogs(context.Background(), adapters)
+	if err == nil {
+		t.Fatal("expected error on batch failure, got nil")
+	}
+}
