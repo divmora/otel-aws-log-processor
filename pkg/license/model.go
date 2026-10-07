@@ -656,9 +656,17 @@ func ResolveCentralMetricsRegion(c *Claims) string {
 // 2. Metadata["project_id"] or Metadata["project"] (Project/department scope under same organization)
 // 3. Claims.ID                   (Unique license token UUID - Strategy 2 fallback; guarantees complete isolation across projects)
 // 4. Customer.OrgID              (Organization-level tenant fallback if ID is omitted)
-// 5. "bsl1.1-free"               (Non-production / community exemption fallback)
-// 6. "unlicensed"                (Unlicensed production fallback)
-func ResolveEntitlementKey(c *Claims, env string) string {
+// 5. "bsl1.1-free/{env}/{project}" (Scoped non-production / community exemption when project is provided)
+// 6. "bsl1.1-free"               (Non-production fallback when project is omitted)
+// 7. "unlicensed"                (Unlicensed production fallback)
+func ResolveEntitlementKey(c *Claims, env string, project ...string) string {
+	var proj string
+	if len(project) > 0 && strings.TrimSpace(project[0]) != "" {
+		proj = strings.TrimSpace(project[0])
+	} else {
+		proj = strings.TrimSpace(os.Getenv("PROJECT_NAME"))
+	}
+
 	if c != nil {
 		if c.Metadata != nil {
 			if subID := strings.TrimSpace(c.Metadata["subscription_id"]); subID != "" {
@@ -670,11 +678,11 @@ func ResolveEntitlementKey(c *Claims, env string) string {
 				}
 				return projID
 			}
-			if proj := strings.TrimSpace(c.Metadata["project"]); proj != "" {
+			if p := strings.TrimSpace(c.Metadata["project"]); p != "" {
 				if orgID := strings.TrimSpace(c.Customer.OrgID); orgID != "" {
-					return orgID + "/" + proj
+					return orgID + "/" + p
 				}
-				return proj
+				return p
 			}
 		}
 		if c.ID != "" {
@@ -685,7 +693,13 @@ func ResolveEntitlementKey(c *Claims, env string) string {
 		}
 	}
 	if IsNonProductionEnvironment(env) {
+		if proj != "" {
+			return "bsl1.1-free/" + env + "/" + proj
+		}
 		return "bsl1.1-free"
+	}
+	if proj != "" {
+		return "unlicensed/" + proj
 	}
 	return "unlicensed"
 }

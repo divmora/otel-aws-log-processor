@@ -190,7 +190,7 @@ func matchesProdKeyword(s string) (bool, string) {
 }
 
 // DetectProductionIndicators inspects runtime metadata (S3 bucket name, AWS_LAMBDA_FUNCTION_NAME,
-// and Lambda context ARN) to detect whether the workload belongs to a production system.
+// Lambda context ARN, ProjectName, and SourceResourceARNs) to detect whether the workload belongs to a production system.
 func DetectProductionIndicators(opts EnforcementOptions) (bool, string) {
 	// 1. Check S3 Bucket Name
 	if matched, kw := matchesProdKeyword(opts.BucketName); matched {
@@ -210,6 +210,24 @@ func DetectProductionIndicators(opts EnforcementOptions) (bool, string) {
 			if matched, kw := matchesProdKeyword(lc.InvokedFunctionArn); matched {
 				return true, fmt.Sprintf("Invoked Lambda function ARN '%s' contains production indicator '%s'", lc.InvokedFunctionArn, kw)
 			}
+		}
+	}
+
+	// 4. Check Project Name
+	proj := strings.TrimSpace(opts.ProjectName)
+	if proj == "" {
+		proj = strings.TrimSpace(os.Getenv("PROJECT_NAME"))
+	}
+	if proj != "" {
+		if matched, kw := matchesProdKeyword(proj); matched {
+			return true, fmt.Sprintf("Project name '%s' contains production indicator '%s'", proj, kw)
+		}
+	}
+
+	// 5. Check Monitored Source Resource ARNs (e.g. prod load balancers or CloudFront distributions)
+	for _, resARN := range opts.SourceResourceARNs {
+		if matched, kw := matchesProdKeyword(resARN); matched {
+			return true, fmt.Sprintf("Monitored resource '%s' contains production indicator '%s'", resARN, kw)
 		}
 	}
 
@@ -347,6 +365,7 @@ func ExtractResourceFromS3Key(key string) (arn string, shortID string) {
 type EnforcementOptions struct {
 	Context            context.Context
 	Environment        string
+	ProjectName        string // Optional project identifier for multi-project isolation
 	LicenseKey         string
 	LicenseFile        string
 	CRL                string // Optional explicit inline CRL token or PEM block
@@ -410,12 +429,18 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 		env = DetectEnvironment()
 	}
 
+	projectName := strings.TrimSpace(opts.ProjectName)
+	if projectName == "" {
+		projectName = strings.TrimSpace(os.Getenv("PROJECT_NAME"))
+	}
+
 	isNonProd := IsNonProductionEnvironment(env)
 	usageReq := liblicense.BSLUsageRequest{
 		Environment: env,
 		Time:        evalTime,
 		Metadata: map[string]string{
-			"bucket": opts.BucketName,
+			"bucket":  opts.BucketName,
+			"project": projectName,
 		},
 	}
 	entitlement := bslPolicy.EvaluateEntitlement(usageReq)
@@ -502,7 +527,7 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 			}
 
 			activeResources := 0
-			entitlementKey := ResolveEntitlementKey(nil, env)
+			entitlementKey := ResolveEntitlementKey(nil, env, projectName)
 			if opts.CloudWatchRegistry != nil {
 				count, regErr := opts.CloudWatchRegistry.RegisterAndCount(opts.Context, entitlementKey, opts.SourceResourceARNs, evalTime)
 				if regErr != nil {
@@ -742,9 +767,42 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 		}
 	}
 
+	// Verify Project Scoping if license is project-restricted
+	if status.Claims != nil && status.Claims.Metadata != nil {
+		expectedProj := strings.TrimSpace(status.Claims.Metadata["project"])
+		if expectedProj == "" {
+			expectedProj = strings.TrimSpace(status.Claims.Metadata["project_id"])
+		}
+		if expectedProj != "" && projectName != "" && !strings.EqualFold(expectedProj, projectName) {
+			mismatchMsg := fmt.Sprintf("COMMERCIAL LICENSE PROJECT MISMATCH: License authorizes project '%s' but runtime project is '%s'",
+				expectedProj, projectName)
+			slog.Warn(mismatchMsg, "authorized_project", expectedProj, "runtime_project", projectName, "contact", "licensing@divmora.com")
+			status.Valid = false
+			status.StatusReason = "project_mismatch"
+			status.Message = mismatchMsg
+
+			if mode == "strict" {
+				return status, fmt.Errorf("%s: %w", mismatchMsg, liblicense.ErrScopeMismatch)
+			}
+			if (isNonProd || entitlement.Authorized) && !hasProd {
+				slog.Warn("Commercial license project mismatch in non-production environment; falling back to free non-production grant under BSL 1.1",
+					"environment", env,
+					"runtime_project", projectName,
+					"authorized_project", expectedProj,
+				)
+				return &ValidationStatus{
+					Valid:        true,
+					StatusReason: "non_prod_free",
+					Message:      fmt.Sprintf("Non-production environment '%s' authorized free of charge under BSL 1.1 Additional Use Grant (%s)", env, mismatchMsg),
+				}, nil
+			}
+			return status, nil
+		}
+	}
+
 	maxResources := GetMaxResources(status.Claims)
 	activeResources := 0
-	entitlementKey := ResolveEntitlementKey(status.Claims, env)
+	entitlementKey := ResolveEntitlementKey(status.Claims, env, projectName)
 
 	if opts.CloudWatchRegistry != nil && maxResources > 0 {
 		count, regErr := opts.CloudWatchRegistry.RegisterAndCount(opts.Context, entitlementKey, opts.SourceResourceARNs, evalTime)
@@ -820,7 +878,7 @@ func PreflightEnforce(opts EnforcementOptions) (*ValidationStatus, error) {
 }
 
 // AppendLicenseAttributes stamps telemetry metadata into OpenTelemetry Resource Attributes.
-func AppendLicenseAttributes(attrs []model.OTelAttribute, status *ValidationStatus, env string, accountID string) []model.OTelAttribute {
+func AppendLicenseAttributes(attrs []model.OTelAttribute, status *ValidationStatus, env string, accountID string, project ...string) []model.OTelAttribute {
 	if status == nil {
 		status = &ValidationStatus{
 			StatusReason: "unlicensed_production",
@@ -844,6 +902,17 @@ func AppendLicenseAttributes(attrs []model.OTelAttribute, status *ValidationStat
 	if accountID != "" {
 		model.AddAttr(&attrs, "divmora.license.account", accountID)
 	}
+
+	var proj string
+	if len(project) > 0 && strings.TrimSpace(project[0]) != "" {
+		proj = strings.TrimSpace(project[0])
+	} else {
+		proj = strings.TrimSpace(os.Getenv("PROJECT_NAME"))
+	}
+	if proj != "" {
+		model.AddAttr(&attrs, "divmora.license.project", proj)
+	}
+
 	if status.Claims != nil {
 		if mr := GetMaxResources(status.Claims); mr > 0 {
 			model.AddInt64Attr(&attrs, "divmora.license.max_resources", int64(mr))
@@ -940,14 +1009,24 @@ func BuildEMFPayload(status *ValidationStatus, env string, recordsProcessed int,
 		centralRegion = ResolveCentralMetricsRegion(nil)
 	}
 
+	proj := strings.TrimSpace(os.Getenv("PROJECT_NAME"))
+	logProcessorDims := [][]string{
+		{"Environment", "Status", "Region"},
+		{"Environment", "Region"},
+		{"Environment"},
+	}
+	if proj != "" {
+		logProcessorDims = append([][]string{
+			{"Environment", "Project", "Status", "Region"},
+			{"Environment", "Project", "Region"},
+			{"Environment", "Project"},
+		}, logProcessorDims...)
+	}
+
 	cloudWatchMetrics := []map[string]any{
 		{
-			"Namespace": "Divmora/LogProcessor",
-			"Dimensions": [][]string{
-				{"Environment", "Status", "Region"},
-				{"Environment", "Region"},
-				{"Environment"},
-			},
+			"Namespace":  "Divmora/LogProcessor",
+			"Dimensions": logProcessorDims,
 			"Metrics": []map[string]string{
 				{"Name": "RecordsProcessed", "Unit": "Count"},
 				{"Name": "BytesProcessed", "Unit": "Bytes"},
@@ -964,6 +1043,11 @@ func BuildEMFPayload(status *ValidationStatus, env string, recordsProcessed int,
 		}
 		if primaryResource != "" {
 			licenseDims = append(licenseDims, []string{"LicenseID", "Tier", "ResourceARN"})
+		}
+		if proj != "" {
+			licenseDims = append([][]string{
+				{"LicenseID", "Project", "Tier"},
+			}, licenseDims...)
 		}
 		cloudWatchMetrics = append(cloudWatchMetrics, map[string]any{
 			"Namespace":  "Divmora/License",
@@ -990,6 +1074,9 @@ func BuildEMFPayload(status *ValidationStatus, env string, recordsProcessed int,
 		"ActiveMonitoredResources": activeRes,
 	}
 
+	if proj != "" {
+		emf["Project"] = proj
+	}
 	if licenseID != "" {
 		emf["LicenseID"] = licenseID
 		emf["Tier"] = tier

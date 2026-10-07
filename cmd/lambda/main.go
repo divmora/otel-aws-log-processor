@@ -150,12 +150,14 @@ func init() {
 
 	// Initial license compliance check
 	env := license.DetectEnvironment()
+	projectName := strings.TrimSpace(utils.GetEnv("PROJECT_NAME", ""))
 	initStatus, _ := license.Enforce(license.EnforcementOptions{
 		Environment:  env,
+		ProjectName:  projectName,
 		QuotaTracker: quotaTracker,
 	})
 	if initStatus != nil {
-		logger.Info("License engine initialized", "status", initStatus.StatusReason, "environment", env, "message", initStatus.Message)
+		logger.Info("License engine initialized", "status", initStatus.StatusReason, "environment", env, "project", projectName, "message", initStatus.Message)
 	}
 }
 
@@ -172,6 +174,10 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 	failureAction := strings.ToLower(utils.GetEnv("DIVMORA_LICENSE_FAILURE_ACTION", "discard"))
 	callerAccount := license.ExtractCallerAccountID(ctx)
 	env := license.DetectEnvironment()
+	projectName := strings.TrimSpace(utils.GetEnv("PROJECT_NAME", ""))
+	if projectName != "" {
+		logger = logger.With("project", projectName)
+	}
 
 	var authTime time.Time
 	for _, record := range sqsEvent.Records {
@@ -188,6 +194,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 	preflightStatus, preflightErr := license.PreflightEnforce(license.EnforcementOptions{
 		Context:           ctx,
 		Environment:       env,
+		ProjectName:       projectName,
 		CallerAccountID:   callerAccount,
 		AuthoritativeTime: authTime,
 	})
@@ -374,6 +381,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 	licStatus, err := license.Enforce(license.EnforcementOptions{
 		Context:            ctx,
 		Environment:        env,
+		ProjectName:        projectName,
 		CallerAccountID:    callerAccount,
 		SourceAccountIDs:   sourceAccounts,
 		SourceResourceARNs: sourceResources,

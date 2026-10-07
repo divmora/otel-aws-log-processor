@@ -3298,3 +3298,216 @@ func TestEnforce_NonProductionMaxResources(t *testing.T) {
 		t.Errorf("expected commercial license to authorize 15 resources: valid=%v, reason=%s", statusPro.Valid, statusPro.StatusReason)
 	}
 }
+
+func TestEnforce_MultiProjectIsolation_NonProd(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	mockCW := newMockCloudWatchRegistryAPI()
+	reg := NewCloudWatchRegistry(mockCW)
+
+	// Project A: payments in dev with 6 ALBs
+	arnsA := []string{
+		"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/payments-alb-1/111",
+		"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/payments-alb-2/222",
+		"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/payments-alb-3/333",
+		"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/payments-alb-4/444",
+		"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/payments-alb-5/555",
+		"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/payments-alb-6/666",
+	}
+	optsA := EnforcementOptions{
+		Environment:        "development",
+		ProjectName:        "payments",
+		BucketName:         "dev-payments-logs",
+		SourceResourceARNs: arnsA,
+		CloudWatchRegistry: reg,
+		EnforcementMode:    "strict",
+		EvaluationTime:     now,
+	}
+	statusA, errA := Enforce(optsA)
+	if errA != nil {
+		t.Fatalf("unexpected error for project A: %v", errA)
+	}
+	if !statusA.Valid || statusA.StatusReason != "non_prod_free" {
+		t.Errorf("expected project A to succeed as non_prod_free, got status: %+v", statusA)
+	}
+
+	// Project B: identity in dev with 6 ALBs (total in dev across projects is 12)
+	arnsB := []string{
+		"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/identity-alb-1/aaa",
+		"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/identity-alb-2/bbb",
+		"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/identity-alb-3/ccc",
+		"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/identity-alb-4/ddd",
+		"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/identity-alb-5/eee",
+		"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/identity-alb-6/fff",
+	}
+	optsB := EnforcementOptions{
+		Environment:        "development",
+		ProjectName:        "identity",
+		BucketName:         "dev-identity-logs",
+		SourceResourceARNs: arnsB,
+		CloudWatchRegistry: reg,
+		EnforcementMode:    "strict",
+		EvaluationTime:     now,
+	}
+	statusB, errB := Enforce(optsB)
+	if errB != nil {
+		t.Fatalf("unexpected error for project B: %v (multi-project isolation failed)", errB)
+	}
+	if !statusB.Valid || statusB.StatusReason != "non_prod_free" {
+		t.Errorf("expected project B to succeed as non_prod_free, got status: %+v", statusB)
+	}
+}
+
+func TestEnforce_CommercialProjectScopedLicense(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	claims := &Claims{
+		ID: "lic_project_payments",
+		Customer: Customer{
+			Name:  "Acme Corp",
+			OrgID: "org_acme",
+		},
+		Product:   "otel-aws-log-processor",
+		Plan:      TierPro,
+		Scope:     &Scope{Accounts: []string{"123456789012"}},
+		IssuedAt:  now,
+		ExpiresAt: now.AddDate(1, 0, 0),
+		Metadata: map[string]string{
+			"project": "payments",
+		},
+	}
+	token := signTestToken(claims, testPrivKey)
+
+	// 1. Matching project in production -> valid
+	optsMatch := EnforcementOptions{
+		Environment:     "production",
+		ProjectName:     "payments",
+		BucketName:      "payments-prod-bucket",
+		LicenseKey:      token,
+		PublicKey:       testPubKey,
+		CallerAccountID: "123456789012",
+		EnforcementMode: "strict",
+		EvaluationTime:  now,
+	}
+	statusMatch, errMatch := Enforce(optsMatch)
+	if errMatch != nil || !statusMatch.Valid {
+		t.Fatalf("expected matching project to succeed, got status: %+v, err: %v", statusMatch, errMatch)
+	}
+
+	// 2. Mismatched project in production strict mode -> fails
+	optsMismatch := EnforcementOptions{
+		Environment:     "production",
+		ProjectName:     "analytics",
+		BucketName:      "analytics-prod-bucket",
+		LicenseKey:      token,
+		PublicKey:       testPubKey,
+		CallerAccountID: "123456789012",
+		EnforcementMode: "strict",
+		EvaluationTime:  now,
+	}
+	statusMismatch, errMismatch := Enforce(optsMismatch)
+	if errMismatch == nil {
+		t.Fatalf("expected project mismatch error in strict mode, got nil")
+	}
+	if !errors.Is(errMismatch, liblicense.ErrScopeMismatch) {
+		t.Errorf("expected ErrScopeMismatch, got %v", errMismatch)
+	}
+	if statusMismatch.Valid || statusMismatch.StatusReason != "project_mismatch" {
+		t.Errorf("expected project_mismatch status, got %+v", statusMismatch)
+	}
+
+	// 3. Mismatched project in non-prod -> falls back to non_prod_free
+	optsNonProdMismatch := EnforcementOptions{
+		Environment:     "development",
+		ProjectName:     "analytics",
+		BucketName:      "dev-analytics-logs",
+		LicenseKey:      token,
+		PublicKey:       testPubKey,
+		CallerAccountID: "123456789012",
+		EnforcementMode: "warn",
+		EvaluationTime:  now,
+	}
+	statusNonProd, errNonProd := Enforce(optsNonProdMismatch)
+	if errNonProd != nil {
+		t.Fatalf("expected non-prod fallback to succeed, got %v", errNonProd)
+	}
+	if !statusNonProd.Valid || statusNonProd.StatusReason != "non_prod_free" {
+		t.Errorf("expected non_prod_free fallback, got %+v", statusNonProd)
+	}
+}
+
+func TestDetectProductionIndicators_ProjectNameAndResourceARNs(t *testing.T) {
+	// 1. Production keyword in ProjectName
+	hasProd, reason := DetectProductionIndicators(EnforcementOptions{
+		Environment: "development",
+		ProjectName: "payments-prod-worker",
+	})
+	if !hasProd {
+		t.Errorf("expected production indicator from ProjectName, got false")
+	}
+	if !strings.Contains(reason, "Project name 'payments-prod-worker' contains production indicator") {
+		t.Errorf("unexpected reason: %s", reason)
+	}
+
+	// 2. Production keyword in SourceResourceARNs
+	hasProdARN, reasonARN := DetectProductionIndicators(EnforcementOptions{
+		Environment: "development",
+		ProjectName: "payments-dev",
+		SourceResourceARNs: []string{
+			"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/prod-checkout-alb/50dc6c495c0c9188",
+		},
+	})
+	if !hasProdARN {
+		t.Errorf("expected production indicator from SourceResourceARNs, got false")
+	}
+	if !strings.Contains(reasonARN, "Monitored resource") || !strings.Contains(reasonARN, "prod") {
+		t.Errorf("unexpected reason: %s", reasonARN)
+	}
+
+	// 3. Clean non-prod ProjectName and ARNs
+	cleanProd, _ := DetectProductionIndicators(EnforcementOptions{
+		Environment: "development",
+		ProjectName: "payments-dev",
+		SourceResourceARNs: []string{
+			"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/dev-checkout-alb/50dc6c495c0c9188",
+		},
+	})
+	if cleanProd {
+		t.Errorf("expected clean dev options not to trigger production indicator")
+	}
+}
+
+func TestAppendLicenseAttributes_WithProject(t *testing.T) {
+	status := &ValidationStatus{
+		Valid:        true,
+		StatusReason: "non_prod_free",
+	}
+	var attrs []model.OTelAttribute
+	attrs = AppendLicenseAttributes(attrs, status, "development", "123456789012", "payments")
+
+	foundProj := false
+	for _, attr := range attrs {
+		if attr.Key == "divmora.license.project" && attr.Value.StringValue != nil && *attr.Value.StringValue == "payments" {
+			foundProj = true
+			break
+		}
+	}
+	if !foundProj {
+		t.Errorf("expected divmora.license.project attribute to be stamped with 'payments'")
+	}
+}
+
+func TestBuildEMFPayload_WithProject(t *testing.T) {
+	t.Setenv("PROJECT_NAME", "checkout")
+	defer t.Setenv("PROJECT_NAME", "")
+
+	status := &ValidationStatus{
+		Valid:        true,
+		StatusReason: "valid",
+	}
+	payload := BuildEMFPayload(status, "production", 100, 5, int64(5000))
+	if payload == nil {
+		t.Fatalf("expected non-nil EMF payload")
+	}
+	if proj, ok := payload["Project"].(string); !ok || proj != "checkout" {
+		t.Errorf("expected Project='checkout' in EMF payload, got %v", payload["Project"])
+	}
+}

@@ -209,14 +209,31 @@ func TestResolveEntitlementKey(t *testing.T) {
 		t.Errorf("got %s, want org_fallback", key)
 	}
 
-	// 5. Non-production environment fallback
+	// 5. Non-production environment fallback (no project)
 	if key := ResolveEntitlementKey(nil, "development"); key != "bsl1.1-free" {
 		t.Errorf("got %s, want bsl1.1-free", key)
 	}
 
-	// 6. Unlicensed production fallback
+	// 6. Non-production environment with explicit project argument
+	if key := ResolveEntitlementKey(nil, "development", "payments"); key != "bsl1.1-free/development/payments" {
+		t.Errorf("got %s, want bsl1.1-free/development/payments", key)
+	}
+
+	// 7. Non-production environment with PROJECT_NAME env var
+	t.Setenv("PROJECT_NAME", "identity")
+	if key := ResolveEntitlementKey(nil, "staging"); key != "bsl1.1-free/staging/identity" {
+		t.Errorf("got %s, want bsl1.1-free/staging/identity", key)
+	}
+	t.Setenv("PROJECT_NAME", "")
+
+	// 8. Unlicensed production fallback
 	if key := ResolveEntitlementKey(nil, "production"); key != "unlicensed" {
 		t.Errorf("got %s, want unlicensed", key)
+	}
+
+	// 9. Unlicensed production with project
+	if key := ResolveEntitlementKey(nil, "production", "analytics"); key != "unlicensed/analytics" {
+		t.Errorf("got %s, want unlicensed/analytics", key)
 	}
 }
 
