@@ -210,12 +210,25 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 	projectName := strings.TrimSpace(utils.GetEnv("PROJECT_NAME", ""))
 
 	var authTime time.Time
+	var preflightBucket string
 	for _, record := range sqsEvent.Records {
 		if sentTs, ok := record.Attributes["SentTimestamp"]; ok && sentTs != "" {
 			if ms, err := strconv.ParseInt(sentTs, 10, 64); err == nil && authTime.IsZero() {
 				authTime = time.UnixMilli(ms).UTC()
-				break
 			}
+		}
+		if preflightBucket == "" {
+			if s3Records, err := eventsPkg.ParseBodyAsS3(logger, []byte(record.Body)); err == nil {
+				for _, rec := range s3Records {
+					if rec.S3.Bucket.Name != "" {
+						preflightBucket = rec.S3.Bucket.Name
+						break
+					}
+				}
+			}
+		}
+		if !authTime.IsZero() && preflightBucket != "" {
+			break
 		}
 	}
 
@@ -227,6 +240,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 		ProjectName:       projectName,
 		CallerAccountID:   callerAccount,
 		AuthoritativeTime: authTime,
+		BucketName:        preflightBucket,
 	})
 	var claims *license.Claims
 	if preflightStatus != nil {
@@ -369,13 +383,18 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 
 	wg.Wait()
 
-	// Extract source account IDs from parsed log records
+	// Extract source account IDs from parsed log records and S3 keys
 	sourceAccountMap := make(map[string]struct{})
 	for _, entry := range allEntries {
 		for _, attr := range entry.GetResourceAttributes() {
 			if attr.Key == "cloud.account.id" && attr.Value.StringValue != nil {
 				sourceAccountMap[*attr.Value.StringValue] = struct{}{}
 			}
+		}
+	}
+	for _, k := range processedKeys {
+		if acc, _ := utils.ParseRegionAccountFromS3Key(k); acc != "" {
+			sourceAccountMap[acc] = struct{}{}
 		}
 	}
 	var sourceAccounts []string
