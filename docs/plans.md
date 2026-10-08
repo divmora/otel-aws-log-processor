@@ -182,8 +182,9 @@ The processor runtime utilizes a thread-safe `ResourceTracker` (`sync.RWMutex`) 
 2. **Dynamic Ingestion Extraction**: As log records are parsed, resource identifiers are extracted from both S3 keys and parsed record attributes.
 3. **Tracking & Deduplication**: Active resources are added to the container's `ResourceTracker`.
 4. **Enforcement Modes**:
-   - **`DIVMORA_LICENSE_MODE=warn` (Default)**: If active monitored resources exceed `MaxResources`, or a resource is not listed in `Resources`, the invocation logs a structured warning and stamps `divmora.license.status=resource_quota_exceeded` or `resource_not_allowed` on exported telemetry without interrupting the data stream.
-   - **`DIVMORA_LICENSE_MODE=strict`**: Quota breaches return deterministic errors (`ErrResourceQuotaExceeded` or `ErrResourceNotAllowed`). Combined with `DIVMORA_LICENSE_FAILURE_ACTION=discard`, the Lambda acknowledges the message to cleanly halt cost-inflating SQS redrive loops while recording violation telemetry.
+   - **`DIVMORA_LICENSE_MODE=auto` (Default)**: In non-production environments without production indicators, defaults to warn mode (non-blocking). When running in production or when production indicators are detected across any monitored bucket or resource, automatically escalates to strict mode to protect against unlicensed usage.
+   - **`DIVMORA_LICENSE_MODE=warn`**: If active monitored resources exceed `MaxResources`, or a resource is not listed in `Resources`, the invocation logs a structured warning and stamps `divmora.license.status=resource_quota_exceeded` or `resource_not_allowed` on exported telemetry without interrupting the data stream.
+   - **`DIVMORA_LICENSE_MODE=strict`**: Quota breaches and unlicensed production executions return deterministic errors (`ErrResourceQuotaExceeded` or `ErrResourceNotAllowed`). Combined with `DIVMORA_LICENSE_FAILURE_ACTION=discard`, the Lambda acknowledges the message to cleanly halt cost-inflating SQS redrive loops while recording violation telemetry.
 5. **CloudWatch EMF Metric Schema**:
    The runtime publishes dimensioned metrics under the `Divmora/LogProcessor` and `Divmora/License` namespaces with sub-millisecond async emission:
    ```json

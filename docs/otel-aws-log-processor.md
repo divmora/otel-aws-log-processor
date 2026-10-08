@@ -44,7 +44,7 @@ flowchart TD
 ### 1.1 Ingestion Flow & Lifecycle
 1. **Event Delivery**: As AWS services (ALB, NLB, CloudFront, WAF) write compressed logs to Amazon S3, S3 `ObjectCreated` notifications are dispatched via Amazon EventBridge to an Amazon SQS queue.
 2. **Lambda Invocations**: The Lambda handler is triggered with batches of SQS messages (default batch size: 10).
-3. **Pre-flight Fast Fail**: In `DIVMORA_LICENSE_MODE=strict`, pre-flight verification validates token integrity, expiration, and environment before initiating S3 network requests. Deterministic license failures are halted immediately, deleting the message (`DIVMORA_LICENSE_FAILURE_ACTION=discard`) to suppress costly SQS retry storms.
+3. **Pre-flight Fast Fail & Multi-Bucket Defense**: Pre-flight verification inspects token integrity, expiration, CRL, caller account, and all S3 bucket names in the batch (`BucketNames`) before initiating S3 network requests. When production indicators are detected across any bucket, `DIVMORA_LICENSE_MODE=auto` strictly enforces commercial licensing. Deterministic license failures are halted immediately, deleting the message (`DIVMORA_LICENSE_FAILURE_ACTION=discard`) or routing to DLQ (`dlq`) to suppress costly SQS retry storms.
 4. **Streaming Decompression**: The processor streams S3 objects line-by-line via buffered `io.Reader` scanners without buffering entire archives into memory. RAM utilization remains between 256MB and 512MB even when processing multi-hundred megabyte logs.
 5. **Parser Registry**: S3 bucket names and object keys are matched against registered parsers (`Matches(bucket, key)`).
 6. **LogAdapter Transformation**: Log lines are converted into typed `LogAdapter` structures that define target resource attributes, log body, severity, timestamps, and OpenTelemetry trace IDs parsed from AWS X-Ray headers.
@@ -210,15 +210,18 @@ All settings are configured through environment variables:
 | Environment Variable | Description | Default | Allowed Values |
 |---|---|---|---|
 | `OTLP_HTTP_LOGS_ENDPOINT` | Destination endpoint for OTLP HTTP JSON logs | `http://localhost:4318/v1/logs` | Valid HTTP/HTTPS URL |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Custom HTTP headers for OTLP receiver | `""` | Comma-separated `k=v` or JSON string |
 | `BASIC_AUTH_USERNAME` | Basic authentication username for OTLP receiver | `""` | String |
 | `BASIC_AUTH_PASSWORD` | Basic authentication password for OTLP receiver | `""` | String |
 | `MAX_BATCH_SIZE` | Maximum log records per exported OTLP batch | `500` | Integer (1–5000) |
 | `MAX_RETRIES` | Max HTTP retry attempts on transient network/server errors | `3` | Integer (0–10) |
 | `MAX_CONCURRENT` | Max concurrent worker goroutines processing files | `10` | Integer (1–50) |
+| `LOG_LEVEL` | Application logging level | `INFO` | `DEBUG`, `INFO`, `WARN`, `ERROR` |
 | `ENVIRONMENT` | Deployment environment name | `production` | `development`, `staging`, `production` |
+| `PROJECT_NAME` | Project identifier for project-scoped licenses and isolation | `""` | String matching `claims.Metadata["project"]` |
 | `DIVMORA_LICENSE_KEY` | Commercial Ed25519 license token | `""` | Valid `DIV1...` token |
 | `DIVMORA_LICENSE_FILE` | Path to commercial license key file | `""` | File path |
-| `DIVMORA_LICENSE_MODE` | Enforcement behavior upon license non-compliance | `warn` | `warn`, `strict` |
+| `DIVMORA_LICENSE_MODE` | Enforcement behavior upon license non-compliance | `auto` | `auto`, `strict`, `warn` |
 | `DIVMORA_LICENSE_FAILURE_ACTION` | SQS behavior on deterministic license failure | `discard` | `discard`, `dlq` |
 | `DIVMORA_CRL` | Armored or token-formatted offline Certificate Revocation List | `""` | Valid `DIVCRL1...` token |
 | `DIVMORA_CRL_FILE` | Path to offline `.divcrl` file | `""` | File path |

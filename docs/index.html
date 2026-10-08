@@ -1015,7 +1015,7 @@ Resources:
           MAX_RETRIES: 3
           MAX_CONCURRENT: 10
           DIVMORA_LICENSE_KEY: ""
-          DIVMORA_LICENSE_MODE: warn
+          DIVMORA_LICENSE_MODE: auto
           DIVMORA_LICENSE_FAILURE_ACTION: discard
       Policies:
         - S3ReadPolicy:
@@ -1386,6 +1386,12 @@ otlp_config:
                 <td class="px-4 py-3 text-slate-300 font-sans">Deployment environment tier (<code class="text-emerald-300 font-mono">development</code>, <code class="text-emerald-300 font-mono">staging</code>, <code class="text-emerald-300 font-mono">production</code>, etc.). Non-production tiers are free under BSL 1.1.</td>
               </tr>
               <tr>
+                <td class="px-4 py-3 text-brand-400 font-semibold">PROJECT_NAME</td>
+                <td class="px-4 py-3 text-slate-500">""</td>
+                <td class="px-4 py-3 text-emerald-400">string</td>
+                <td class="px-4 py-3 text-slate-300 font-sans">Optional project identifier for multi-project license scoping (<code class="text-emerald-300 font-mono">claims.Metadata["project"]</code>) and multi-tenant isolation.</td>
+              </tr>
+              <tr>
                 <td class="px-4 py-3 text-brand-400 font-semibold">DIVMORA_LICENSE_KEY</td>
                 <td class="px-4 py-3 text-slate-500">""</td>
                 <td class="px-4 py-3 text-emerald-400">string (JWT/Base64)</td>
@@ -1393,9 +1399,9 @@ otlp_config:
               </tr>
               <tr>
                 <td class="px-4 py-3 text-brand-400 font-semibold">DIVMORA_LICENSE_MODE</td>
-                <td class="px-4 py-3 text-slate-400">warn</td>
+                <td class="px-4 py-3 text-slate-400">auto</td>
                 <td class="px-4 py-3 text-emerald-400">string</td>
-                <td class="px-4 py-3 text-slate-300 font-sans">Licensing enforcement mode in production: <code class="text-amber-300 font-mono">warn</code> (non-blocking diagnostics with telemetry markers) or <code class="text-rose-300 font-mono">strict</code> (blocks execution if unverified).</td>
+                <td class="px-4 py-3 text-slate-300 font-sans">Licensing enforcement mode: <code class="text-sky-300 font-mono">auto</code> (strictly enforces commercial license when production indicators or production tier are detected; warn mode for non-prod), <code class="text-rose-300 font-mono">strict</code>, or <code class="text-amber-300 font-mono">warn</code>.</td>
               </tr>
               <tr>
                 <td class="px-4 py-3 text-brand-400 font-semibold">DIVMORA_LICENSE_FAILURE_ACTION</td>

@@ -39,11 +39,13 @@ otel-aws-log-processor/
 │   └── lambda/                # AWS Lambda entrypoint (SQS event consumer)
 ├── pkg/
 │   ├── events/                # S3 and EventBridge SQS event parsing
+│   ├── license/               # BSL 1.1 license enforcement, preflight checks, and CloudWatch registry
 │   ├── model/                 # OpenTelemetry JSON data models
 │   ├── parser/                # Dedicated log parsers (ALB, NLB, WAF, CloudFront)
 │   ├── processor/             # File-matching registry and LogAdapter conversions
 │   ├── sender/                # OTLP HTTP batching and retry client
-│   └── utils/                 # Helpers (AWS trace IDs, URLs, env vars, time)
+│   ├── utils/                 # Helpers (AWS trace IDs, URLs, env vars, time)
+│   └── version/               # Semantic versioning and cryptographic release provenance
 ├── .github/
 │   ├── dependabot.yml         # Automated dependency updates
 │   └── workflows/             # Reusable CI/CD, release, and PR workflows
@@ -70,14 +72,18 @@ The Lambda handler is configured entirely via environment variables:
 | Variable | Description | Default |
 | :--- | :--- | :--- |
 | `OTLP_HTTP_LOGS_ENDPOINT` | HTTP destination endpoint for OTLP logs | `http://localhost:4318/v1/logs` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Custom HTTP headers for OTLP receiver (comma-separated `k=v` or JSON) | `""` |
 | `BASIC_AUTH_USERNAME` | Basic authentication username (optional) | `""` |
 | `BASIC_AUTH_PASSWORD` | Basic authentication password (optional) | `""` |
 | `MAX_BATCH_SIZE` | Max log records per OTLP HTTP batch request | `500` |
 | `MAX_RETRIES` | Number of retry attempts on failed HTTP requests | `3` |
 | `MAX_CONCURRENT` | Concurrency limit for file processing & HTTP sending | `10` |
+| `LOG_LEVEL` | Application logging level (`DEBUG`, `INFO`, `WARN`, `ERROR`) | `INFO` |
 | `ENVIRONMENT` | Environment name (`development`, `staging`, `production`, etc.) | `production` |
+| `PROJECT_NAME` | Project identifier for project-scoped licenses and multi-tenant isolation | `""` |
 | `DIVMORA_LICENSE_KEY` | Commercial Ed25519 license token (required for production) | `""` |
-| `DIVMORA_LICENSE_MODE` | Production enforcement mode (`warn` non-blocking or `strict`) | `warn` |
+| `DIVMORA_LICENSE_FILE` | Path to commercial license key file | `""` |
+| `DIVMORA_LICENSE_MODE` | Enforcement mode: `auto` (strict for prod, warn for non-prod), `strict`, or `warn` | `auto` |
 | `DIVMORA_LICENSE_FAILURE_ACTION` | SQS behavior on strict license failure (`discard` to stop retry loops, or `dlq`) | `discard` |
 
 ---
