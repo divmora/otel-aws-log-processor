@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.1](https://github.com/divmora/otel-aws-log-processor/compare/v0.3.0...v0.3.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **lambda:** pass preflightBucket to PreflightEnforce and extract accounts from S3 keys ([4fb3049](https://github.com/divmora/otel-aws-log-processor/commit/4fb30492327fbacf29e39d57cb18d2bd459e5fb0))
+* **license:** support multiple S3 log buckets in SQS event batch ([c5d384f](https://github.com/divmora/otel-aws-log-processor/commit/c5d384fb5cd22e5160823960bb772753e5277fe1))
+* **license:** unify violation detection, dispatch preflight metrics, and resolve real cloudfront distribution id ([240891c](https://github.com/divmora/otel-aws-log-processor/commit/240891cc05de9bcc47d16b98793bbeea8a94e313))
+* resolve license bypass vulnerabilities and s3 reader error propagation ([cd44262](https://github.com/divmora/otel-aws-log-processor/commit/cd44262eab8310455e59359b9c1c43b6df234b30))
+* **sender:** prevent goroutine leak and waitgroup bypass in OTLPClient.SendLogs ([8e76f97](https://github.com/divmora/otel-aws-log-processor/commit/8e76f972f0b57b896d714266fae1c0f5de0a205c))
+
 ## [0.3.0](https://github.com/divmora/otel-aws-log-processor/compare/v0.2.0...v0.3.0) (2026-10-07)
 
 
