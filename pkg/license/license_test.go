@@ -2698,6 +2698,24 @@ func TestDetectProductionIndicators(t *testing.T) {
 			opts:        EnforcementOptions{BucketName: "staging-alb-logs"},
 			wantMatched: false,
 		},
+		// Multiple S3 Buckets in batch
+		{
+			name:          "MultipleBucketsWithOneProd",
+			opts:          EnforcementOptions{BucketNames: []string{"my-dev-bucket", "company-prod-alb-logs"}},
+			wantMatched:   true,
+			wantIndicator: "prod",
+		},
+		{
+			name:        "MultipleBucketsAllDev",
+			opts:        EnforcementOptions{BucketNames: []string{"my-dev-bucket", "staging-alb-logs"}},
+			wantMatched: false,
+		},
+		{
+			name:          "MultipleBucketsWithBucketNameFallback",
+			opts:          EnforcementOptions{BucketName: "live-traffic-bucket", BucketNames: []string{"my-dev-bucket"}},
+			wantMatched:   true,
+			wantIndicator: "live",
+		},
 		// AWS Lambda Function Name
 		{
 			name:          "LambdaFunctionNameProd",
@@ -2753,6 +2771,39 @@ func TestDetectProductionIndicators(t *testing.T) {
 			t.Errorf("expected reason to contain 'prod', got %s", reason)
 		}
 	})
+}
+
+func TestDetectProductionIndicators_MultipleBuckets(t *testing.T) {
+	// 1. Batch contains both dev and prod buckets
+	opts := EnforcementOptions{
+		BucketNames: []string{"dev-logs-bucket", "corp-production-alb-logs"},
+	}
+	hasProd, reason := DetectProductionIndicators(opts)
+	if !hasProd {
+		t.Fatalf("expected hasProd=true when one of the buckets in BucketNames has production keyword")
+	}
+	if !strings.Contains(reason, "corp-production-alb-logs") || !strings.Contains(reason, "production") {
+		t.Errorf("unexpected indicator reason: %s", reason)
+	}
+
+	// 2. Batch contains only dev and staging buckets
+	optsDev := EnforcementOptions{
+		BucketNames: []string{"dev-logs-bucket", "staging-logs-bucket"},
+	}
+	hasProdDev, reasonDev := DetectProductionIndicators(optsDev)
+	if hasProdDev {
+		t.Fatalf("expected hasProd=false for dev buckets, got reason: %s", reasonDev)
+	}
+
+	// 3. Fallback when opts.BucketName is prod and BucketNames only contains dev
+	optsFallback := EnforcementOptions{
+		BucketName:  "corp-production-alb-logs",
+		BucketNames: []string{"dev-logs-bucket"},
+	}
+	hasProdFallback, _ := DetectProductionIndicators(optsFallback)
+	if !hasProdFallback {
+		t.Fatalf("expected hasProd=true when BucketName contains prod even if BucketNames has dev")
+	}
 }
 
 func TestEnforce_EnvironmentVariableSpoofing_StrictMode(t *testing.T) {

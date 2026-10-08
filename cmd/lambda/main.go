@@ -19,6 +19,7 @@ import (
 	"github.com/divmora/otel-aws-log-processor/pkg/processor"
 	"github.com/divmora/otel-aws-log-processor/pkg/sender"
 	"github.com/divmora/otel-aws-log-processor/pkg/utils"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -210,26 +211,29 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 	projectName := strings.TrimSpace(utils.GetEnv("PROJECT_NAME", ""))
 
 	var authTime time.Time
-	var preflightBucket string
+	preflightBucketMap := make(map[string]struct{})
 	for _, record := range sqsEvent.Records {
 		if sentTs, ok := record.Attributes["SentTimestamp"]; ok && sentTs != "" {
 			if ms, err := strconv.ParseInt(sentTs, 10, 64); err == nil && authTime.IsZero() {
 				authTime = time.UnixMilli(ms).UTC()
 			}
 		}
-		if preflightBucket == "" {
-			if s3Records, err := eventsPkg.ParseBodyAsS3(logger, []byte(record.Body)); err == nil {
-				for _, rec := range s3Records {
-					if rec.S3.Bucket.Name != "" {
-						preflightBucket = rec.S3.Bucket.Name
-						break
-					}
+		if s3Records, err := eventsPkg.ParseBodyAsS3(logger, []byte(record.Body)); err == nil {
+			for _, rec := range s3Records {
+				if rec.S3.Bucket.Name != "" {
+					preflightBucketMap[rec.S3.Bucket.Name] = struct{}{}
 				}
 			}
 		}
-		if !authTime.IsZero() && preflightBucket != "" {
-			break
-		}
+	}
+	var preflightBuckets []string
+	for b := range preflightBucketMap {
+		preflightBuckets = append(preflightBuckets, b)
+	}
+	sort.Strings(preflightBuckets)
+	var preflightBucket string
+	if len(preflightBuckets) > 0 {
+		preflightBucket = preflightBuckets[0]
 	}
 
 	// 1. Preflight baseline license verification
@@ -241,6 +245,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 		CallerAccountID:   callerAccount,
 		AuthoritativeTime: authTime,
 		BucketName:        preflightBucket,
+		BucketNames:       preflightBuckets,
 	})
 	var claims *license.Claims
 	if preflightStatus != nil {
@@ -278,7 +283,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 
 	var allEntries []processor.LogAdapter
 	var processedKeys []string
-	var lastBucket string
+	bucketMap := make(map[string]struct{})
 	featureSet := make(map[string]struct{})
 
 	var wg sync.WaitGroup
@@ -306,6 +311,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 			msgFailed := false
 			var recordEntries []processor.LogAdapter
 			var recordKeys []string
+			recordBuckets := make(map[string]struct{})
 			recordFeatures := make(map[string]struct{})
 
 			for _, s3Record := range s3Records {
@@ -317,9 +323,7 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 					continue
 				}
 
-				mu.Lock()
-				lastBucket = bucket
-				mu.Unlock()
+				recordBuckets[bucket] = struct{}{}
 
 				log := logger.With("bucket", bucket, "key", key, "message_id", record.MessageId)
 				log.Info("Processing S3 object")
@@ -373,6 +377,9 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 				}
 				if len(recordKeys) > 0 {
 					processedKeys = append(processedKeys, recordKeys...)
+				}
+				for b := range recordBuckets {
+					bucketMap[b] = struct{}{}
 				}
 				for feat := range recordFeatures {
 					featureSet[feat] = struct{}{}
@@ -438,6 +445,19 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 		sourceResources = append(sourceResources, res)
 	}
 
+	var processedBuckets []string
+	for b := range bucketMap {
+		processedBuckets = append(processedBuckets, b)
+	}
+	if len(processedBuckets) == 0 && len(preflightBuckets) > 0 {
+		processedBuckets = preflightBuckets
+	}
+	sort.Strings(processedBuckets)
+	var primaryBucket string
+	if len(processedBuckets) > 0 {
+		primaryBucket = processedBuckets[0]
+	}
+
 	// Evaluate license compliance
 	licStatus, err := license.Enforce(license.EnforcementOptions{
 		Context:            ctx,
@@ -451,7 +471,8 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 		QuotaTracker:       quotaTracker,
 		ResourceTracker:    resourceTracker,
 		CloudWatchRegistry: cwRegistry,
-		BucketName:         lastBucket,
+		BucketName:         primaryBucket,
+		BucketNames:        processedBuckets,
 		AuthoritativeTime:  authTime,
 	})
 	if err != nil {

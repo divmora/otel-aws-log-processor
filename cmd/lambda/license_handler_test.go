@@ -350,4 +350,33 @@ func TestHandlerLicensingModes(t *testing.T) {
 			t.Errorf("got TotalBytesProcessed %d, want %d", quotaTracker.TotalBytesProcessed(), 100*1024*1024)
 		}
 	})
+
+	// 8. Test Multi-Bucket SQS Batch Production Detection
+	t.Run("MultiBucketBatchProductionDetection", func(t *testing.T) {
+		t.Setenv("ENVIRONMENT", "development")
+		t.Setenv("DIVMORA_LICENSE_MODE", "auto")
+		t.Setenv("DIVMORA_LICENSE_KEY", "")
+		t.Setenv("DIVMORA_LICENSE_FAILURE_ACTION", "dlq")
+
+		// First message is from dev-logs-bucket, second message is from prod-alb-logs
+		msg1Body := `{"version":"0","id":"msg-1","detail-type":"Object Created","source":"aws.s3","detail":{"bucket":{"name":"dev-logs-bucket"},"object":{"key":"alb/dev/test.log.gz"}}}`
+		msg2Body := `{"version":"0","id":"msg-2","detail-type":"Object Created","source":"aws.s3","detail":{"bucket":{"name":"prod-alb-logs"},"object":{"key":"alb/prod/test.log.gz"}}}`
+
+		sqsEvent := events.SQSEvent{
+			Records: []events.SQSMessage{
+				{MessageId: "msg-dev", Body: msg1Body},
+				{MessageId: "msg-prod", Body: msg2Body},
+			},
+		}
+
+		resp, err := handler(ctx, sqsEvent)
+		if err != nil {
+			t.Fatalf("expected nil error (retry suppression), got: %v", err)
+		}
+		// Since prod bucket is present in the batch, auto mode escalates to strict and preflight fails.
+		// Under DLQ failure action, all messages in the failing preflight batch must be flagged for DLQ.
+		if len(resp.BatchItemFailures) != 2 {
+			t.Fatalf("expected 2 batch item failures for multi-bucket prod detection, got %d", len(resp.BatchItemFailures))
+		}
+	})
 }

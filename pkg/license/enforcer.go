@@ -192,9 +192,24 @@ func matchesProdKeyword(s string) (bool, string) {
 // DetectProductionIndicators inspects runtime metadata (S3 bucket name, AWS_LAMBDA_FUNCTION_NAME,
 // Lambda context ARN, ProjectName, and SourceResourceARNs) to detect whether the workload belongs to a production system.
 func DetectProductionIndicators(opts EnforcementOptions) (bool, string) {
-	// 1. Check S3 Bucket Name
-	if matched, kw := matchesProdKeyword(opts.BucketName); matched {
-		return true, fmt.Sprintf("S3 bucket name '%s' contains production indicator '%s'", opts.BucketName, kw)
+	// 1. Check S3 Bucket Name(s)
+	buckets := opts.BucketNames
+	if opts.BucketName != "" {
+		found := false
+		for _, b := range buckets {
+			if b == opts.BucketName {
+				found = true
+				break
+			}
+		}
+		if !found {
+			buckets = append(buckets, opts.BucketName)
+		}
+	}
+	for _, b := range buckets {
+		if matched, kw := matchesProdKeyword(b); matched {
+			return true, fmt.Sprintf("S3 bucket name '%s' contains production indicator '%s'", b, kw)
+		}
 	}
 
 	// 2. Check AWS Lambda Function Name (immutable environment variable injected by AWS Lambda runtime)
@@ -380,6 +395,7 @@ type EnforcementOptions struct {
 	ResourceTracker    *ResourceTracker
 	CloudWatchRegistry *CloudWatchRegistry
 	BucketName         string
+	BucketNames        []string
 	ExercisedFeatures  []string
 	PublicKey          ed25519.PublicKey
 	EvaluationTime     time.Time
@@ -435,11 +451,15 @@ func Enforce(opts EnforcementOptions) (*ValidationStatus, error) {
 	}
 
 	isNonProd := IsNonProductionEnvironment(env)
+	bucketMeta := opts.BucketName
+	if len(opts.BucketNames) > 0 {
+		bucketMeta = strings.Join(opts.BucketNames, ",")
+	}
 	usageReq := liblicense.BSLUsageRequest{
 		Environment: env,
 		Time:        evalTime,
 		Metadata: map[string]string{
-			"bucket":  opts.BucketName,
+			"bucket":  bucketMeta,
 			"project": projectName,
 		},
 	}
