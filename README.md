@@ -231,7 +231,7 @@ We welcome contributions from the community! Please review our community documen
 
 - **[Contributing Guide](CONTRIBUTING.md)**: Guidelines for local setup, pull requests, and conventional commits.
 - **[Subscription Plans & Feature Matrix](docs/plans.md)**: Breakdown of Community (Free Non-Prod), Pro, and Enterprise tiers and feature entitlements.
-- **[Code of Conduct](CODE_OF_CONDUCT.md)**: Community standards and expectations.
+- **[Code of Conduct](https://github.com/divmora/.github/blob/main/CODE_OF_CONDUCT.md)**: Community standards and expectations.
 - **[Security Policy](SECURITY.md)**: Vulnerability disclosure guidelines and SLA.
 
 ---

@@ -8,7 +8,7 @@ Please review this guide before submitting issues or pull requests.
 
 ## Code of Conduct
 
-This project adheres to the Contributor Covenant [Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code.
+This project adheres to the Contributor Covenant [Code of Conduct](https://github.com/divmora/.github/blob/main/CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code.
 
 ---
 
