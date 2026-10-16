@@ -138,6 +138,7 @@ The Lambda handler is configured via environment variables:
 | `DIVMORA_CRL` | Inline armored/token Certificate Revocation List (CRL) | `""` |
 | `DIVMORA_CRL_FILE` | Path to offline `.divcrl` file | `""` |
 | `DIVMORA_CRL_URL` | Remote HTTPS endpoint for dynamic CRL polling with disk caching | `""` |
+| `ENRICH_USER_AGENT` | Enable OpenTelemetry semantic User-Agent string parsing and enrichment (`true`/`false`) | `false` |
 
 ---
 

@@ -28,10 +28,16 @@ type ByteTrackable interface {
 	SetByteTracker(bt ByteTracker)
 }
 
+// UserAgentEnrichable represents a processor that can enrich User-Agent telemetry.
+type UserAgentEnrichable interface {
+	SetEnrichUserAgent(enrich bool)
+}
+
 // Registry manages the available processors
 type Registry struct {
-	processors  []LogProcessor
-	byteTracker ByteTracker
+	processors      []LogProcessor
+	byteTracker     ByteTracker
+	enrichUserAgent bool
 }
 
 // NewRegistry creates a new processor registry
@@ -51,11 +57,26 @@ func (r *Registry) SetByteTracker(bt ByteTracker) {
 	}
 }
 
+// SetEnrichUserAgent configures User-Agent enrichment on all registered processors that support it.
+func (r *Registry) SetEnrichUserAgent(enrich bool) {
+	r.enrichUserAgent = enrich
+	for _, p := range r.processors {
+		if uae, ok := p.(UserAgentEnrichable); ok {
+			uae.SetEnrichUserAgent(enrich)
+		}
+	}
+}
+
 // Register adds a processor to the registry
 func (r *Registry) Register(p LogProcessor) {
 	if r.byteTracker != nil {
 		if trackable, ok := p.(ByteTrackable); ok {
 			trackable.SetByteTracker(r.byteTracker)
+		}
+	}
+	if r.enrichUserAgent {
+		if uae, ok := p.(UserAgentEnrichable); ok {
+			uae.SetEnrichUserAgent(r.enrichUserAgent)
 		}
 	}
 	r.processors = append(r.processors, p)

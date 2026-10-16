@@ -53,8 +53,6 @@ This document serves as the **living product roadmap** for `otel-aws-log-process
 
 - [ ] **MaxMind GeoIP & ASN Attribute Enrichment**
   - Support optional offline MaxMind GeoLite2/GeoIP2 database lookup (embedded or mounted via AWS Lambda EFS) to enrich client IP addresses with `geo.country_iso_code`, `geo.city_name`, and `geo.asn`.
-- [ ] **User-Agent String Parser**
-  - Parse `user_agent` strings into standard OpenTelemetry browser, OS, and device attributes (`user_agent.original`, `browser.name`, `os.name`).
 - [ ] **Self-Observability Metrics**
   - Emit native OTLP runtime metrics (`otel_aws_logs.records_parsed_total`, `otel_aws_logs.export_duration_ms`, `otel_aws_logs.bytes_processed_total`) to monitor processing efficiency.
 

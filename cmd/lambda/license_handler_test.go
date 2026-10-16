@@ -204,6 +204,54 @@ func TestHandlerLicensingModes(t *testing.T) {
 		if statusUnentitled.StatusReason != "feature_not_entitled" {
 			t.Errorf("got status reason %s, want feature_not_entitled", statusUnentitled.StatusReason)
 		}
+
+		// Pro plan with unentitled User-Agent enrichment feature in strict mode
+		optsUAUnentitled := license.EnforcementOptions{
+			Environment:       "production",
+			EnforcementMode:   "strict",
+			LicenseKey:        token,
+			CallerAccountID:   "123456789012",
+			ExercisedFeatures: []string{license.FeatureEnrichmentUserAgent},
+			PublicKey:         testHandlerPubKey,
+		}
+		statusUAUnentitled, err := license.Enforce(optsUAUnentitled)
+		if err == nil {
+			t.Fatal("expected error for Pro plan exercising Enterprise UserAgent feature in strict mode")
+		}
+		if statusUAUnentitled.Valid {
+			t.Error("expected status.Valid to be false")
+		}
+		if statusUAUnentitled.StatusReason != "feature_not_entitled" {
+			t.Errorf("got status reason %s, want feature_not_entitled", statusUAUnentitled.StatusReason)
+		}
+
+		// Enterprise plan exercising User-Agent enrichment feature in strict mode
+		entClaims := &license.Claims{
+			ID: "lic_handler_ent_test",
+			Customer: license.Customer{
+				Name: "Enterprise Customer",
+			},
+			Product: "otel-aws-log-processor",
+			Plan:    license.TierEnterprise,
+			Scope: &license.Scope{
+				Accounts: []string{"123456789012"},
+			},
+			IssuedAt:  time.Now().UTC(),
+			ExpiresAt: time.Now().UTC().AddDate(1, 0, 0),
+		}
+		entToken := signTestHandlerToken(entClaims, testHandlerPrivKey)
+		optsUAEnt := license.EnforcementOptions{
+			Environment:       "production",
+			EnforcementMode:   "strict",
+			LicenseKey:        entToken,
+			CallerAccountID:   "123456789012",
+			ExercisedFeatures: []string{license.FeatureEnrichmentUserAgent},
+			PublicKey:         testHandlerPubKey,
+		}
+		statusUAEnt, err := license.Enforce(optsUAEnt)
+		if err != nil || !statusUAEnt.Valid {
+			t.Fatalf("expected Enterprise plan exercising UserAgent enrichment to succeed: %v", err)
+		}
 	})
 
 	// 6. Test Production Resource Quota Verification

@@ -13,14 +13,19 @@ import (
 )
 
 type ALBProcessor struct {
-	MaxBatchSize  int
-	MaxConcurrent int
-	Parser        parser.LogParser[parser.ALBLogEntry]
-	ByteTracker   ByteTracker
+	MaxBatchSize    int
+	MaxConcurrent   int
+	Parser          parser.LogParser[parser.ALBLogEntry]
+	ByteTracker     ByteTracker
+	EnrichUserAgent bool
 }
 
 func (p *ALBProcessor) SetByteTracker(bt ByteTracker) {
 	p.ByteTracker = bt
+}
+
+func (p *ALBProcessor) SetEnrichUserAgent(enrich bool) {
+	p.EnrichUserAgent = enrich
 }
 
 func (p *ALBProcessor) Name() string {
@@ -44,9 +49,10 @@ func (p *ALBProcessor) Process(ctx context.Context, logger *slog.Logger, s3Clien
 			return nil, nil
 		}
 		return ALBAdapter{
-			ALBLogEntry: entry,
-			AccountID:   accountID,
-			Region:      region,
+			ALBLogEntry:     entry,
+			AccountID:       accountID,
+			Region:          region,
+			EnrichUserAgent: p.EnrichUserAgent,
 		}, nil
 	}, p.ByteTracker)
 }
@@ -54,8 +60,9 @@ func (p *ALBProcessor) Process(ctx context.Context, logger *slog.Logger, s3Clien
 // ALBAdapter implementation
 type ALBAdapter struct {
 	*parser.ALBLogEntry
-	AccountID string
-	Region    string
+	AccountID       string
+	Region          string
+	EnrichUserAgent bool
 }
 
 func (a ALBAdapter) GetResourceKey() string {
@@ -171,6 +178,9 @@ func (a ALBAdapter) BuildAttributes() []model.OTelAttribute {
 
 	// User agent
 	model.AddAttr(&attrs, "user_agent.original", entry.UserAgent)
+	if a.EnrichUserAgent && entry.UserAgent != "" && entry.UserAgent != "-" {
+		utils.EnrichUserAgentAttributes(&attrs, entry.UserAgent)
+	}
 
 	// TLS attributes
 	model.AddAttr(&attrs, "tls.cipher_suite", entry.SSLCipher)

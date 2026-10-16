@@ -226,6 +226,7 @@ All settings are configured through environment variables:
 | `DIVMORA_CRL` | Armored or token-formatted offline Certificate Revocation List | `""` | Valid `DIVCRL1...` token |
 | `DIVMORA_CRL_FILE` | Path to offline `.divcrl` file | `""` | File path |
 | `DIVMORA_CRL_URL` | Remote HTTPS endpoint for dynamic CRL polling | `""` | HTTPS URL |
+| `ENRICH_USER_AGENT` | Enable OpenTelemetry semantic User-Agent string parsing and enrichment | `false` | `true`, `false` |
 
 ---
 

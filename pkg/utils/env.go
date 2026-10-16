@@ -26,3 +26,15 @@ func GetEnvInt(key string, defaultValue int) int {
 	}
 	return defaultValue
 }
+
+// GetEnvBool retrieves the boolean value of the environment variable named by the key.
+// "true", "1", "t", "yes", "y" evaluate to true; "false", "0", "f", "no", "n" evaluate to false.
+// Otherwise, defaultValue is returned.
+func GetEnvBool(key string, defaultValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		if b, err := strconv.ParseBool(value); err == nil {
+			return b
+		}
+	}
+	return defaultValue
+}

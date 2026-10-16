@@ -151,14 +151,18 @@ func init() {
 	// Initialize CloudWatch Distributed Resource Registry for local region
 	_ = getCloudWatchRegistry(license.GetCurrentRegion())
 
+	enrichUserAgent := utils.GetEnvBool("ENRICH_USER_AGENT", false)
+
 	// Initialize Registry
 	registry = processor.NewRegistry()
 	registry.SetByteTracker(quotaTracker)
+	registry.SetEnrichUserAgent(enrichUserAgent)
 	registry.Register(&processor.ALBProcessor{
-		MaxBatchSize:  maxBatchSize,
-		MaxConcurrent: maxConcurrent,
-		Parser:        &parser.ALBParser{},
-		ByteTracker:   quotaTracker,
+		MaxBatchSize:    maxBatchSize,
+		MaxConcurrent:   maxConcurrent,
+		Parser:          &parser.ALBParser{},
+		ByteTracker:     quotaTracker,
+		EnrichUserAgent: enrichUserAgent,
 	})
 	registry.Register(&processor.NLBProcessor{
 		MaxBatchSize:  maxBatchSize,
@@ -167,16 +171,18 @@ func init() {
 		ByteTracker:   quotaTracker,
 	})
 	registry.Register(&processor.CloudFrontProcessor{
-		MaxBatchSize:  maxBatchSize,
-		MaxConcurrent: maxConcurrent,
-		Parser:        &parser.CloudFrontParser{},
-		ByteTracker:   quotaTracker,
+		MaxBatchSize:    maxBatchSize,
+		MaxConcurrent:   maxConcurrent,
+		Parser:          &parser.CloudFrontParser{},
+		ByteTracker:     quotaTracker,
+		EnrichUserAgent: enrichUserAgent,
 	})
 	registry.Register(&processor.WAFProcessor{
-		MaxBatchSize:  maxBatchSize,
-		MaxConcurrent: maxConcurrent,
-		Parser:        &parser.WAFParser{},
-		ByteTracker:   quotaTracker,
+		MaxBatchSize:    maxBatchSize,
+		MaxConcurrent:   maxConcurrent,
+		Parser:          &parser.WAFParser{},
+		ByteTracker:     quotaTracker,
+		EnrichUserAgent: enrichUserAgent,
 	})
 
 	// Initial license compliance check
@@ -209,6 +215,8 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 	callerAccount := license.ExtractCallerAccountID(ctx)
 	env := license.DetectEnvironment()
 	projectName := strings.TrimSpace(utils.GetEnv("PROJECT_NAME", ""))
+	enrichUserAgent := utils.GetEnvBool("ENRICH_USER_AGENT", false)
+	registry.SetEnrichUserAgent(enrichUserAgent)
 
 	var authTime time.Time
 	preflightBucketMap := make(map[string]struct{})
@@ -360,6 +368,9 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 						}
 					case "WAF":
 						recordFeatures[license.FeatureParserWAF] = struct{}{}
+					}
+					if enrichUserAgent && (proc.Name() == "ALB" || proc.Name() == "CloudFront" || proc.Name() == "WAF") {
+						recordFeatures[license.FeatureEnrichmentUserAgent] = struct{}{}
 					}
 				}
 			}

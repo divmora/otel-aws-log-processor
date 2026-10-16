@@ -14,14 +14,19 @@ import (
 )
 
 type WAFProcessor struct {
-	MaxBatchSize  int
-	MaxConcurrent int
-	Parser        parser.LogParser[parser.WAFLogEntry]
-	ByteTracker   ByteTracker
+	MaxBatchSize    int
+	MaxConcurrent   int
+	Parser          parser.LogParser[parser.WAFLogEntry]
+	ByteTracker     ByteTracker
+	EnrichUserAgent bool
 }
 
 func (p *WAFProcessor) SetByteTracker(bt ByteTracker) {
 	p.ByteTracker = bt
+}
+
+func (p *WAFProcessor) SetEnrichUserAgent(enrich bool) {
+	p.EnrichUserAgent = enrich
 }
 
 func (p *WAFProcessor) Name() string {
@@ -43,9 +48,10 @@ func (p *WAFProcessor) Process(ctx context.Context, logger *slog.Logger, s3Clien
 		}
 
 		return &WAFAdapter{
-			WAFLogEntry: &entry,
-			AccountID:   accountID,
-			Region:      region,
+			WAFLogEntry:     &entry,
+			AccountID:       accountID,
+			Region:          region,
+			EnrichUserAgent: p.EnrichUserAgent,
 		}, nil
 	}, p.ByteTracker)
 }
@@ -53,8 +59,9 @@ func (p *WAFProcessor) Process(ctx context.Context, logger *slog.Logger, s3Clien
 // WAFAdapter implementation
 type WAFAdapter struct {
 	*parser.WAFLogEntry
-	AccountID string
-	Region    string
+	AccountID       string
+	Region          string
+	EnrichUserAgent bool
 }
 
 func (a *WAFAdapter) GetResourceKey() string {
@@ -176,6 +183,9 @@ func (a *WAFAdapter) BuildAttributes() []model.OTelAttribute {
 	for _, h := range req.Headers {
 		if strings.EqualFold(h.Name, "User-Agent") {
 			model.AddAttr(&attrs, "user_agent.original", h.Value)
+			if a.EnrichUserAgent && h.Value != "" && h.Value != "-" {
+				utils.EnrichUserAgentAttributes(&attrs, h.Value)
+			}
 		}
 		if strings.EqualFold(h.Name, "Host") {
 			model.AddAttr(&attrs, "server.address", h.Value)

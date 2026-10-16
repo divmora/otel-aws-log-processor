@@ -97,3 +97,38 @@ func TestCloudFrontAdapter_GetResourceKey(t *testing.T) {
 		t.Errorf("GetResourceKey() fallback = %q, want api.customdomain.com", got)
 	}
 }
+
+func TestCloudFrontAdapter_EnrichUserAgent(t *testing.T) {
+	entry := &parser.CloudFrontLogEntry{
+		CSUserAgent: "Mozilla%2F5.0%20%28iPhone%3B%20CPU%20iPhone%20OS%2017_1%20like%20Mac%20OS%20X%29%20AppleWebKit%2F605.1.15%20%28KHTML%2C%20like%20Gecko%29%20Version%2F17.1%20Mobile%2F15E148%20Safari%2F604.1",
+	}
+
+	// 1. Without enrichment
+	adapterNoEnrich := CloudFrontAdapter{CloudFrontLogEntry: entry, EnrichUserAgent: false}
+	attrsNoEnrich := adapterNoEnrich.BuildAttributes()
+	for _, a := range attrsNoEnrich {
+		if a.Key == "user_agent.name" || a.Key == "browser.name" {
+			t.Errorf("unexpected attribute %s when EnrichUserAgent is false", a.Key)
+		}
+	}
+
+	// 2. With enrichment
+	adapterEnrich := CloudFrontAdapter{CloudFrontLogEntry: entry, EnrichUserAgent: true}
+	attrsEnrich := adapterEnrich.BuildAttributes()
+	attrMap := make(map[string]string)
+	for _, a := range attrsEnrich {
+		if a.Value.StringValue != nil {
+			attrMap[a.Key] = *a.Value.StringValue
+		}
+	}
+
+	if attrMap["user_agent.name"] != "Safari" {
+		t.Errorf("got user_agent.name %q, want Safari", attrMap["user_agent.name"])
+	}
+	if attrMap["user_agent.os.name"] != "iOS" {
+		t.Errorf("got user_agent.os.name %q, want iOS", attrMap["user_agent.os.name"])
+	}
+	if attrMap["device.name"] != "iPhone" {
+		t.Errorf("got device.name %q, want iPhone", attrMap["device.name"])
+	}
+}

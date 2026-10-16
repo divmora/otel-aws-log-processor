@@ -134,3 +134,38 @@ func TestALBAdapterExtractResourceAttributes(t *testing.T) {
 		t.Error("aws.alb.target_group_arn attribute not found in Resource Attributes")
 	}
 }
+
+func TestALBAdapter_EnrichUserAgent(t *testing.T) {
+	entry := &parser.ALBLogEntry{
+		UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+	}
+
+	// 1. Without enrichment
+	adapterNoEnrich := ALBAdapter{ALBLogEntry: entry, EnrichUserAgent: false}
+	attrsNoEnrich := adapterNoEnrich.BuildAttributes()
+	for _, a := range attrsNoEnrich {
+		if a.Key == "user_agent.name" || a.Key == "browser.name" {
+			t.Errorf("unexpected attribute %s when EnrichUserAgent is false", a.Key)
+		}
+	}
+
+	// 2. With enrichment
+	adapterEnrich := ALBAdapter{ALBLogEntry: entry, EnrichUserAgent: true}
+	attrsEnrich := adapterEnrich.BuildAttributes()
+	attrMap := make(map[string]string)
+	for _, a := range attrsEnrich {
+		if a.Value.StringValue != nil {
+			attrMap[a.Key] = *a.Value.StringValue
+		}
+	}
+
+	if attrMap["user_agent.name"] != "Chrome" {
+		t.Errorf("got user_agent.name %q, want Chrome", attrMap["user_agent.name"])
+	}
+	if attrMap["user_agent.os.name"] != "Windows" {
+		t.Errorf("got user_agent.os.name %q, want Windows", attrMap["user_agent.os.name"])
+	}
+	if attrMap["device.name"] != "PC" {
+		t.Errorf("got device.name %q, want PC", attrMap["device.name"])
+	}
+}

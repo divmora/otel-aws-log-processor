@@ -216,3 +216,42 @@ func TestWAFAdapterToOTel_ResponseCodeSent(t *testing.T) {
 		})
 	}
 }
+
+func TestWAFAdapter_EnrichUserAgent(t *testing.T) {
+	entry := &parser.WAFLogEntry{
+		HTTPRequest: parser.HTTPRequest{
+			Headers: []parser.Header{
+				{Name: "User-Agent", Value: "curl/7.68.0"},
+			},
+		},
+	}
+
+	// 1. Without enrichment
+	adapterNoEnrich := WAFAdapter{WAFLogEntry: entry, EnrichUserAgent: false}
+	attrsNoEnrich := adapterNoEnrich.BuildAttributes()
+	for _, a := range attrsNoEnrich {
+		if a.Key == "user_agent.name" || a.Key == "browser.name" {
+			t.Errorf("unexpected attribute %s when EnrichUserAgent is false", a.Key)
+		}
+	}
+
+	// 2. With enrichment
+	adapterEnrich := WAFAdapter{WAFLogEntry: entry, EnrichUserAgent: true}
+	attrsEnrich := adapterEnrich.BuildAttributes()
+	attrMap := make(map[string]string)
+	for _, a := range attrsEnrich {
+		if a.Value.StringValue != nil {
+			attrMap[a.Key] = *a.Value.StringValue
+		}
+	}
+
+	if attrMap["user_agent.name"] != "curl" {
+		t.Errorf("got user_agent.name %q, want curl", attrMap["user_agent.name"])
+	}
+	if attrMap["user_agent.version"] != "7.68.0" {
+		t.Errorf("got user_agent.version %q, want 7.68.0", attrMap["user_agent.version"])
+	}
+	if attrMap["device.name"] != "Tool" {
+		t.Errorf("got device.name %q, want Tool", attrMap["device.name"])
+	}
+}

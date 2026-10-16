@@ -85,6 +85,7 @@ The Lambda handler is configured entirely via environment variables:
 | `DIVMORA_LICENSE_FILE` | Path to commercial license key file | `""` |
 | `DIVMORA_LICENSE_MODE` | Enforcement mode: `auto` (strict for prod, warn for non-prod), `strict`, or `warn` | `auto` |
 | `DIVMORA_LICENSE_FAILURE_ACTION` | SQS behavior on strict license failure (`discard` to stop retry loops, or `dlq`) | `discard` |
+| `ENRICH_USER_AGENT` | Enable OpenTelemetry semantic User-Agent string parsing and enrichment (`true`/`false`) | `false` |
 
 ---
 

@@ -115,6 +115,34 @@ func TestRegistry_SetByteTracker(t *testing.T) {
 	}
 }
 
+func TestRegistry_SetEnrichUserAgent(t *testing.T) {
+	reg := processor.NewRegistry()
+	reg.SetEnrichUserAgent(true)
+
+	alb := &processor.ALBProcessor{}
+	cf := &processor.CloudFrontProcessor{}
+	waf := &processor.WAFProcessor{}
+	reg.Register(alb)
+	reg.Register(cf)
+	reg.Register(waf)
+
+	if !alb.EnrichUserAgent {
+		t.Error("expected ALBProcessor.EnrichUserAgent to be true")
+	}
+	if !cf.EnrichUserAgent {
+		t.Error("expected CloudFrontProcessor.EnrichUserAgent to be true")
+	}
+	if !waf.EnrichUserAgent {
+		t.Error("expected WAFProcessor.EnrichUserAgent to be true")
+	}
+
+	// Change dynamically
+	reg.SetEnrichUserAgent(false)
+	if alb.EnrichUserAgent || cf.EnrichUserAgent || waf.EnrichUserAgent {
+		t.Error("expected all processors to have EnrichUserAgent=false")
+	}
+}
+
 func BenchmarkCountingReader_ZeroAllocations(b *testing.B) {
 	tracker := &testByteTracker{}
 	data := bytes.Repeat([]byte("A"), 4096)

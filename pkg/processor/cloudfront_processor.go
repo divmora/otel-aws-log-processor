@@ -39,14 +39,19 @@ func ExtractDistributionID(key string) string {
 }
 
 type CloudFrontProcessor struct {
-	MaxBatchSize  int
-	MaxConcurrent int
-	Parser        parser.LogParser[parser.CloudFrontLogEntry]
-	ByteTracker   ByteTracker
+	MaxBatchSize    int
+	MaxConcurrent   int
+	Parser          parser.LogParser[parser.CloudFrontLogEntry]
+	ByteTracker     ByteTracker
+	EnrichUserAgent bool
 }
 
 func (p *CloudFrontProcessor) SetByteTracker(bt ByteTracker) {
 	p.ByteTracker = bt
+}
+
+func (p *CloudFrontProcessor) SetEnrichUserAgent(enrich bool) {
+	p.EnrichUserAgent = enrich
 }
 
 func (p *CloudFrontProcessor) Name() string {
@@ -80,6 +85,7 @@ func (p *CloudFrontProcessor) Process(ctx context.Context, logger *slog.Logger, 
 				DistributionID:     distributionID,
 				AccountID:          accountID,
 				Region:             region,
+				EnrichUserAgent:    p.EnrichUserAgent,
 			}, nil
 		}, p.ByteTracker)
 	}
@@ -98,6 +104,7 @@ func (p *CloudFrontProcessor) Process(ctx context.Context, logger *slog.Logger, 
 			DistributionID:     distributionID,
 			AccountID:          accountID,
 			Region:             region,
+			EnrichUserAgent:    p.EnrichUserAgent,
 		}, nil
 	}, p.ByteTracker)
 }
@@ -105,9 +112,10 @@ func (p *CloudFrontProcessor) Process(ctx context.Context, logger *slog.Logger, 
 // CloudFrontAdapter implementation
 type CloudFrontAdapter struct {
 	*parser.CloudFrontLogEntry
-	DistributionID string
-	AccountID      string
-	Region         string
+	DistributionID  string
+	AccountID       string
+	Region          string
+	EnrichUserAgent bool
 }
 
 func (a CloudFrontAdapter) GetResourceKey() string {
@@ -197,10 +205,13 @@ func (a CloudFrontAdapter) BuildAttributes() []model.OTelAttribute {
 
 	// User Agent
 	decodedUA, err := url.QueryUnescape(entry.CSUserAgent)
+	uaStr := entry.CSUserAgent
 	if err == nil {
-		model.AddAttr(&attrs, "user_agent.original", decodedUA)
-	} else {
-		model.AddAttr(&attrs, "user_agent.original", entry.CSUserAgent)
+		uaStr = decodedUA
+	}
+	model.AddAttr(&attrs, "user_agent.original", uaStr)
+	if a.EnrichUserAgent && uaStr != "" && uaStr != "-" {
+		utils.EnrichUserAgentAttributes(&attrs, uaStr)
 	}
 
 	// Client

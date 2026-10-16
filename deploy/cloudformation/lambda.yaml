@@ -21,6 +21,7 @@ Metadata:
           - Timeout
           - LogLevel
           - LogRetentionInDays
+          - EnrichUserAgent
       - Label:
           default: "OpenTelemetry Exporter Configuration"
         Parameters:
@@ -135,6 +136,16 @@ Parameters:
     Default: 30
     AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 180, 365]
     Description: Number of days to retain CloudWatch logs.
+
+  EnrichUserAgent:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >
+      Enable OpenTelemetry semantic User-Agent string parsing and enrichment ('true' or 'false').
+      Extracts browser, operating system, and device attributes into OpenTelemetry log records.
 
   OtlpLogsEndpoint:
     Type: String
@@ -595,6 +606,7 @@ Resources:
           DIVMORA_LICENSE_FAILURE_ACTION: !Ref DivmoraLicenseFailureAction
           DIVMORA_CRL_URL: !Ref DivmoraCrlUrl
           DIVMORA_RELEASE_SIGNATURE: !Ref DivmoraReleaseSignature
+          ENRICH_USER_AGENT: !Ref EnrichUserAgent
       VpcConfig: !If
         - HasVpc
         - SubnetIds: !Ref VpcSubnetIds
