@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/divmora/otel-aws-log-processor/compare/v0.3.1...v0.4.0) (2026-10-22)
+
+
+### Features
+
+* **processor:** add User-Agent string parser and telemetry enrichment ([0fa1ce9](https://github.com/divmora/otel-aws-log-processor/commit/0fa1ce98dc9f52bf4fed563b6527768258de1a5a))
+
 ## [0.3.1](https://github.com/divmora/otel-aws-log-processor/compare/v0.3.0...v0.3.1) (2026-10-08)
 
 
